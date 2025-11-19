@@ -29,21 +29,79 @@ export type FuzzyConfig<Params extends Record<string, unknown>> = {
 /**
  * A bucket key that implements Hash and Equal for Effect's Cache
  *
+ * Stores the exact-match parameters and computes a structural hash using Effect's Hash.structureKeys.
+ * Uses prototype-based implementation for better performance.
+ *
  * @since 1.0.0
  * @category models
  */
-export class BucketKey implements Equal.Equal {
-  constructor(readonly hash: number) {}
+export interface BucketKey extends Equal.Equal {
+  readonly exactParams: Record<string, unknown>
+  _cachedHash?: number
+}
 
-  [Hash.symbol](): number {
-    return this.hash
-  }
+const BucketKeyProto: Omit<BucketKey, "exactParams" | "_cachedHash"> = {
+  [Hash.symbol](this: BucketKey): number {
+    if (this._cachedHash !== undefined) {
+      return this._cachedHash
+    }
 
-  [Equal.symbol](that: unknown): boolean {
+    // Sort keys for deterministic hashing
+    const keys = Object.keys(this.exactParams).sort()
+
+    // Use Hash.structureKeys for efficient structural hashing
+    const hash = Hash.structureKeys(this.exactParams, keys)
+
+    // Cache the hash by mutating (safe since it's deterministic)
+    ;(this as { _cachedHash?: number })._cachedHash = hash
+
+    return hash
+  },
+
+  [Equal.symbol](this: BucketKey, that: unknown): boolean {
     if (this === that) return true
-    if (!(that instanceof BucketKey)) return false
-    return this.hash === that.hash
+    if (typeof that !== "object" || that === null) return false
+    if (!("exactParams" in that)) return false
+
+    const thatKey = that as BucketKey
+
+    // Fast path: compare cached hashes if both are computed
+    if (this._cachedHash !== undefined && thatKey._cachedHash !== undefined) {
+      if (this._cachedHash !== thatKey._cachedHash) return false
+    }
+
+    // Deep equality check on exactParams
+    const thisKeys = Object.keys(this.exactParams).sort()
+    const thatKeys = Object.keys(thatKey.exactParams).sort()
+
+    // Different number of keys
+    if (thisKeys.length !== thatKeys.length) return false
+
+    // Check all keys and values match
+    for (let i = 0; i < thisKeys.length; i++) {
+      const key = thisKeys[i]
+      if (key !== thatKeys[i]) return false
+      if (!Equal.equals(this.exactParams[key], thatKey.exactParams[key])) return false
+    }
+
+    return true
   }
+}
+
+/**
+ * Create a new BucketKey with the given exact-match parameters
+ *
+ * @since 1.0.0
+ * @category constructors
+ */
+export const makeBucketKey = (exactParams: Record<string, unknown>): BucketKey => {
+  return Object.create(BucketKeyProto, {
+    exactParams: {
+      value: exactParams,
+      enumerable: true,
+      writable: false
+    }
+  })
 }
 
 /**
@@ -90,21 +148,16 @@ export function partitionParams<Params extends Record<string, unknown>>(
 }
 
 /**
- * Create a bucket key from exact-match parameters using Hash.hash
+ * Create a bucket key from exact-match parameters
+ *
+ * Uses Effect's Hash.structureKeys for efficient structural hashing of the parameters.
+ * The BucketKey caches the computed hash for performance.
  *
  * @since 1.0.0
  * @category utilities
  */
 export function createBucketKey(exactParams: Record<string, unknown>): BucketKey {
-  // Sort keys for deterministic hashing
-  const sorted = Object.keys(exactParams)
-    .sort()
-    .map(key => `${key}:${JSON.stringify(exactParams[key])}`)
-    .join("|")
-
-  const hash = Hash.hash(sorted)
-
-  return new BucketKey(hash)
+  return makeBucketKey(exactParams)
 }
 
 /**

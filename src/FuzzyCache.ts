@@ -255,7 +255,7 @@ export const make = <Params extends Record<string, unknown>, Value, Error = neve
     config: options.config,
     capacity: options.capacity,
     timeToLive: () => options.timeToLive,
-    ...(options.minScore !== undefined && { minScore: options.minScore })
+    minScore: options.minScore ?? 0
   })
 
 /**
@@ -300,6 +300,10 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
     // Capture the current context to provide R when calling lookup
     const context = yield* Effect.context<R>()
 
+    // Track our own stats for entry-level hits/misses
+    let hits = 0
+    let misses = 0
+
     // Create underlying Cache for bucket storage
     // Each bucket key maps to a Set of cache entries
     const bucketCache = yield* Cache.make<BucketKey, Set<CacheEntry<Value>>>({
@@ -310,11 +314,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
 
     // Helper: Compute TTL in milliseconds from Exit
     const computeTTL = (exit: Exit.Exit<Value, Error>): number =>
-      Duration.toMillis(
-        typeof options.timeToLive === 'function'
-          ? options.timeToLive(exit)
-          : options.timeToLive
-      )
+      Duration.toMillis(options.timeToLive(exit))
 
     // Helper: Find best matching entry in bucket
     const findBestMatch = (
@@ -357,10 +357,12 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           // Try to find existing match
           const existing = findBestMatch(bucket, params, now)
           if (Option.isSome(existing)) {
+            hits++
             return existing.value.value
           }
 
           // No match found, call lookup
+          misses++
           const value: Value = yield* Effect.provide(options.lookup(params), context)
           const entry: CacheEntry<Value> = {
             id: generateId(),
@@ -446,20 +448,21 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
               params,
               value,
               timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
-            loadedMillis: now
+              loadedMillis: now
             }
             bucket.add(entry)
             return [{ value, score: 1.0, params }]
           }
 
-          // Score and filter by per-call threshold
+          // Score and filter by the higher of per-call threshold or global minScore
+          const effectiveThreshold = Math.max(threshold, options.minScore ?? 0.0)
           const scored = validEntries
             .map((entry) => ({
               value: entry.value,
               score: scoreEntry(entry, params, options.config),
               params: entry.params
             }))
-            .filter((result) => result.score >= threshold)
+            .filter((result) => result.score >= effectiveThreshold)
             .sort((a, b) => b.score - a.score)
 
           return scored
@@ -511,7 +514,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
               params,
               value,
               timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
-            loadedMillis: now
+              loadedMillis: now
             }
             bucket.add(updatedEntry)
           } else {
@@ -521,13 +524,19 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
               params,
               value,
               timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
-            loadedMillis: now
+              loadedMillis: now
             }
             bucket.add(entry)
           }
         }),
 
-      cacheStats: bucketCache.cacheStats,
+      cacheStats: Effect.gen(function* () {
+        const bucketSize = yield* Effect.gen(function* () {
+          const buckets = yield* bucketCache.values
+          return buckets.reduce((sum, bucket) => sum + bucket.size, 0)
+        })
+        return Cache.makeCacheStats({ hits, misses, size: bucketSize })
+      }),
 
       contains: (params: Params) =>
         Effect.gen(function* () {

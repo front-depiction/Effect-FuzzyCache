@@ -3,49 +3,14 @@
  *
  * @since 1.0.0
  */
-import type { ParamMatcher } from "./internal"
+import { ParamMatcher } from "./internal"
 
-/**
- * Creates an exact matcher that requires parameter values to match exactly.
- *
- * Exact matchers are used for parameters that must match precisely during cache lookups.
- * These parameters are used for bucketing, grouping cache entries with identical exact values.
- *
- * @since 1.0.0
- * @category constructors
- * @example
- * ```typescript
- * import * as Matchers from "./matchers"
- *
- * const userIdMatcher = Matchers.Exact<string>()
- * // Used in config: { userId: Matchers.Exact() }
- * ```
- */
-export const Exact = <A>(): ParamMatcher<A> => ({ _tag: "Exact" })
 
-/**
- * Creates a fuzzy matcher with a custom scoring function.
- *
- * The scorer function receives a cached value and a query value, returning a score
- * between 0.0 (no match) and 1.0 (perfect match). Scores above a threshold are
- * considered valid matches.
- *
- * @since 1.0.0
- * @category constructors
- * @example
- * ```typescript
- * import * as Matchers from "./matchers"
- *
- * const ageMatcher = Matchers.Fuzzy<number>((cached, query) => {
- *   const diff = Math.abs(cached - query)
- *   return diff <= 5 ? 1.0 - (diff / 5) : 0.0
- * })
- * ```
- */
-export const Fuzzy = <A>(scorer: (cached: A, query: A) => number): ParamMatcher<A> => ({
-  _tag: "Fuzzy",
-  scorer
-})
+export const Exact = ParamMatcher.Exact
+export const Fuzzy = <A>(scorer: (cached: A, query: A) => number) => ParamMatcher.Fuzzy({ scorer })
+export const match = ParamMatcher.$match
+export const isFuzzy = ParamMatcher.$is("Fuzzy")
+export const isExact = ParamMatcher.$is("Exact")
 
 /**
  * Computes the Levenshtein distance between two strings.
@@ -110,7 +75,7 @@ function computeLevenshtein(a: string, b: string): number {
  * ```
  */
 export const levenshtein = (threshold: number): ParamMatcher<string> =>
-  Fuzzy<string>((cached, query) => {
+  Fuzzy<string>((cached, query): number => {
     const distance = computeLevenshtein(cached, query)
     const maxLength = Math.max(cached.length, query.length)
 

@@ -5,6 +5,12 @@
  */
 import * as Hash from "effect/Hash"
 import * as Equal from "effect/Equal"
+import * as Data from "effect/Data"
+import * as Record from "effect/Record"
+import * as Either from "effect/Either"
+import * as Number from "effect/Number"
+import * as Option from "effect/Option"
+import { pipe } from "effect/Function"
 
 /**
  * Matcher configuration for a single parameter
@@ -12,9 +18,16 @@ import * as Equal from "effect/Equal"
  * @since 1.0.0
  * @category models
  */
-export type ParamMatcher<A> =
-  | { readonly _tag: "Exact" }
-  | { readonly _tag: "Fuzzy"; readonly scorer: (cached: A, query: A) => number }
+export type ParamMatcher<A> = Data.TaggedEnum<{
+  Exact: {},
+  Fuzzy: { readonly scorer: (cached: A, query: A) => number }
+}>
+
+interface ParamMatcherDefinitionn extends Data.TaggedEnum.WithGenerics<1> {
+  readonly taggedEnum: ParamMatcher<this["A"]>
+}
+
+export const ParamMatcher = Data.taggedEnum<ParamMatcherDefinitionn>()
 
 /**
  * Configuration mapping parameter names to matchers
@@ -29,7 +42,7 @@ export type FuzzyConfig<Params extends Record<string, unknown>> = {
 /**
  * A bucket key that implements Hash and Equal for Effect's Cache
  *
- * Stores the exact-match parameters and computes a structural hash using Effect's Hash.structureKeys.
+ * Stores the exact-match parameters and computes a structural hash using Effect's Hash.structure.
  * Uses prototype-based implementation for better performance.
  *
  * @since 1.0.0
@@ -37,51 +50,25 @@ export type FuzzyConfig<Params extends Record<string, unknown>> = {
  */
 export interface BucketKey extends Equal.Equal {
   readonly exactParams: Record<string, unknown>
-  _cachedHash?: number
 }
 
-const BucketKeyProto: Omit<BucketKey, "exactParams" | "_cachedHash"> = {
+const BucketKeyProto: Omit<BucketKey, "exactParams"> = {
   [Hash.symbol](this: BucketKey): number {
-    if (this._cachedHash !== undefined) {
-      return this._cachedHash
-    }
-
-    // Sort keys for deterministic hashing
-    const keys = Object.keys(this.exactParams).sort()
-
-    // Use Hash.structureKeys for efficient structural hashing
-    const hash = Hash.structureKeys(this.exactParams, keys)
-
-    // Cache the hash by mutating (safe since it's deterministic)
-    ;(this as { _cachedHash?: number })._cachedHash = hash
-
-    return hash
+    // Hash.structure is commutative (order-independent) for objects
+    return Hash.cached(this, Hash.structure(this.exactParams))
   },
 
-  [Equal.symbol](this: BucketKey, that: unknown): boolean {
-    if (this === that) return true
-    if (typeof that !== "object" || that === null) return false
-    if (!("exactParams" in that)) return false
+  [Equal.symbol](this: BucketKey, that: BucketKey): boolean {
+    // Simple structural comparison of the exactParams records
+    // We can iterate keys and use Equal.equals on each value
+    const thisKeys = Object.keys(this.exactParams)
+    const thatKeys = Object.keys(that.exactParams)
 
-    const thatKey = that as BucketKey
-
-    // Fast path: compare cached hashes if both are computed
-    if (this._cachedHash !== undefined && thatKey._cachedHash !== undefined) {
-      if (this._cachedHash !== thatKey._cachedHash) return false
-    }
-
-    // Deep equality check on exactParams
-    const thisKeys = Object.keys(this.exactParams).sort()
-    const thatKeys = Object.keys(thatKey.exactParams).sort()
-
-    // Different number of keys
     if (thisKeys.length !== thatKeys.length) return false
 
-    // Check all keys and values match
-    for (let i = 0; i < thisKeys.length; i++) {
-      const key = thisKeys[i]
-      if (key !== thatKeys[i]) return false
-      if (!Equal.equals(this.exactParams[key], thatKey.exactParams[key])) return false
+    for (const key of thisKeys) {
+      if (!(key in that.exactParams)) return false
+      if (!Equal.equals(this.exactParams[key], that.exactParams[key])) return false
     }
 
     return true
@@ -130,19 +117,11 @@ export function partitionParams<Params extends Record<string, unknown>>(
   exact: Partial<Params>
   fuzzy: Partial<Params>
 } {
-  const exact: Record<string, unknown> = {}
-  const fuzzy: Record<string, unknown> = {}
-
-  for (const key in params) {
-    if (Object.prototype.hasOwnProperty.call(params, key)) {
-      const matcher = config[key]
-      if (matcher._tag === "Exact") {
-        exact[key] = params[key]
-      } else {
-        fuzzy[key] = params[key]
-      }
-    }
-  }
+  const [exact, fuzzy] = Record.partitionMap(params, (value, key) => {
+    const matcher = config[key as keyof Params]
+    // Left = exact, Right = fuzzy (partitionMap returns [left, right])
+    return ParamMatcher.$is("Exact")(matcher) ? Either.left(value) : Either.right(value)
+  })
 
   return { exact: exact as Partial<Params>, fuzzy: fuzzy as Partial<Params> }
 }
@@ -150,7 +129,7 @@ export function partitionParams<Params extends Record<string, unknown>>(
 /**
  * Create a bucket key from exact-match parameters
  *
- * Uses Effect's Hash.structureKeys for efficient structural hashing of the parameters.
+ * Uses Effect's Hash.structure for efficient order-independent structural hashing of the parameters.
  * The BucketKey caches the computed hash for performance.
  *
  * @since 1.0.0
@@ -166,34 +145,23 @@ export function createBucketKey(exactParams: Record<string, unknown>): BucketKey
  * @since 1.0.0
  * @category utilities
  */
-export function scoreEntry<Params extends Record<string, unknown>>(
+export const scoreEntry = <Params extends Record<string, unknown>>(
   entry: CacheEntry<unknown>,
   queryParams: Params,
   config: FuzzyConfig<Params>
-): number {
-  const scores: number[] = []
+): number => pipe(
+  config,
+  Record.map((matcher, key) =>
+    ParamMatcher.$match(matcher, {
+      Exact: () => 1,
+      Fuzzy: ({ scorer }) => scorer(entry.params[key] as any, queryParams[key] as any)
+    })),
+  Record.values,
+  Number.sumAll,
+  Number.divide(Record.size(config)),
+  Option.getOrElse(() => 0)
+)
 
-  for (const key in config) {
-    if (Object.prototype.hasOwnProperty.call(config, key)) {
-      const matcher = config[key]
-
-      if (matcher._tag === "Exact") {
-        // Exact params already match (we're in the correct bucket)
-        scores.push(1.0)
-      } else {
-        // Run custom scorer function
-        const cachedValue = entry.params[key] as Params[Extract<keyof Params, string>]
-        const queryValue = queryParams[key]
-        const score = matcher.scorer(cachedValue, queryValue)
-        scores.push(score)
-      }
-    }
-  }
-
-  // Average all scores
-  if (scores.length === 0) return 0
-  return scores.reduce((sum, score) => sum + score, 0) / scores.length
-}
 
 /**
  * Generate a unique ID for cache entries
@@ -203,4 +171,26 @@ export function scoreEntry<Params extends Record<string, unknown>>(
  */
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
+}
+
+
+
+
+export const cacheVariance = {
+  /* c8 ignore next */
+  _Key: (_: any) => _,
+  /* c8 ignore next */
+  _Error: (_: never) => _,
+  /* c8 ignore next */
+  _Value: (_: any) => _
+}
+
+
+export const consumerCacheVariance = {
+  /* c8 ignore next */
+  _Key: (_: any) => _,
+  /* c8 ignore next */
+  _Error: (_: never) => _,
+  /* c8 ignore next */
+  _Value: (_: never) => _
 }

@@ -6,6 +6,13 @@
 import * as Cache from "effect/Cache"
 import * as Effect from "effect/Effect"
 import * as Duration from "effect/Duration"
+import * as Option from "effect/Option"
+import * as Either from "effect/Either"
+import * as Equal from "effect/Equal"
+import * as Predicate from "effect/Predicate"
+import * as Array from "effect/Array"
+import type * as Types from "effect/Types"
+import type * as Exit from "effect/Exit"
 import {
   type BucketKey,
   type CacheEntry,
@@ -13,8 +20,23 @@ import {
   partitionParams,
   createBucketKey,
   scoreEntry,
-  generateId
+  generateId,
+  consumerCacheVariance,
+  cacheVariance
 } from "./internal.js"
+import { Order, pipe } from "effect"
+
+/**
+ * @since 1.0.0
+ * @category symbols
+ */
+export const FuzzyCacheTypeId: unique symbol = Symbol.for("@effect/FuzzyCache")
+
+/**
+ * @since 1.0.0
+ * @category symbols
+ */
+export type FuzzyCacheTypeId = typeof FuzzyCacheTypeId
 
 /**
  * A scored result containing the cached value, its relevance score, and original parameters
@@ -27,37 +49,142 @@ export interface ScoredResult<Value> {
   readonly score: number
   readonly params: Record<string, unknown>
 }
+const OrderByScore: Order.Order<ScoredResult<unknown>> = Order.mapInput(Order.number, result => result.score)
 
 /**
- * FuzzyCache interface providing fuzzy parameter matching with scored results
+ * FuzzyCache extends Effect's Cache interface with fuzzy parameter matching.
+ *
+ * Unlike standard caches that require exact key matches, FuzzyCache returns scored
+ * results based on parameter similarity. The cache organizes entries into buckets
+ * based on exact-match parameters, then scores entries within each bucket using
+ * fuzzy-match parameters.
+ *
+ * Key differences from standard Cache:
+ * - `get()` returns the best-matching cached value (highest score)
+ * - `getAll()` returns all matches above a threshold, sorted by score
+ * - `getOption()` returns the best match as Option.Option
+ * - All other Cache methods work as expected
  *
  * @since 1.0.0
  * @category models
  */
-export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error> {
-  /**
-   * Get cached values matching the given parameters, sorted by relevance score
-   */
-  readonly get: (params: Params) => Effect.Effect<Array<ScoredResult<Value>>, Error>
+export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error = never>
+  extends Cache.Cache<Params, Value, Error> {
+  readonly [FuzzyCacheTypeId]: FuzzyCacheTypeId
 
   /**
-   * Set a value in the cache for the given parameters
+   * Retrieves the best-matching cached value for the given parameters.
+   * If no cached values exist, computes a new value using the lookup function.
+   *
+   * Returns the value with the highest fuzzy match score.
    */
-  readonly set: (params: Params, value: Value) => Effect.Effect<void>
+  get(params: Params): Effect.Effect<Value, Error>
 
   /**
-   * Invalidate all cached values
+   * Retrieves the best-matching cached value as Either.
+   * - Left: value was already cached
+   * - Right: value was newly computed
+   */
+  getEither(params: Params): Effect.Effect<Either.Either<Value, Value>, Error>
+
+  /**
+   * Retrieves the best-matching cached value if it exists, otherwise returns Option.none.
+   * Does not trigger the lookup function.
+   */
+  getOption(params: Params): Effect.Effect<Option.Option<Value>, Error>
+
+  /**
+   * Retrieves the best-matching cached value if it exists and lookup is complete.
+   * Returns Option.none if still computing.
+   */
+  getOptionComplete(params: Params): Effect.Effect<Option.Option<Value>>
+
+  /**
+   * Retrieves all cached values matching the given parameters above the specified threshold,
+   * sorted by score (highest first).
+   *
+   * @param params - Query parameters to match against
+   * @param threshold - Minimum score threshold (0.0 to 1.0). Defaults to 0.0 (return all)
+   */
+  getAll(params: Params, threshold?: number): Effect.Effect<Array<ScoredResult<Value>>, Error>
+
+  /**
+   * Forces recomputation of the value for the given parameters.
+   * Unlike `get`, this always triggers the lookup function but doesn't invalidate
+   * existing cache entries, so requests can still be served while recomputing.
+   */
+  refresh(params: Params): Effect.Effect<void, Error>
+
+  /**
+   * Associates the specified value with the given parameters in the cache.
+   */
+  set(params: Params, value: Value): Effect.Effect<void>
+
+  /**
+   * Returns cache statistics (hits, misses, size)
+   */
+  readonly cacheStats: Effect.Effect<Cache.CacheStats>
+
+  /**
+   * Returns whether any value matching the given parameters exists in the cache.
+   */
+  contains(params: Params): Effect.Effect<boolean>
+
+  /**
+   * Returns statistics for the best-matching entry.
+   */
+  entryStats(params: Params): Effect.Effect<Option.Option<Cache.EntryStats>>
+
+  /**
+   * Invalidates the best-matching cached value for the given parameters.
+   */
+  invalidate(params: Params): Effect.Effect<void>
+
+  /**
+   * Invalidates the best-matching cached value for the given parameters if the predicate holds.
+   */
+  invalidateWhen(params: Params, predicate: Predicate.Predicate<Value>): Effect.Effect<void>
+
+  /**
+   * Invalidates all cached values.
    */
   readonly invalidateAll: Effect.Effect<void>
 
   /**
-   * Get the approximate number of cache entries
+   * Returns the approximate number of cache entries across all buckets.
    */
   readonly size: Effect.Effect<number>
+
+  /**
+   * Returns all parameter sets currently in the cache.
+   */
+  readonly keys: Effect.Effect<Array<Params>>
+
+  /**
+   * Returns all values currently in the cache.
+   */
+  readonly values: Effect.Effect<Array<Value>>
+
+  /**
+   * Returns all entries (params-value pairs) currently in the cache.
+   */
+  readonly entries: Effect.Effect<Array<[Params, Value]>>
 }
 
 /**
- * Creates a new FuzzyCache with the specified configuration
+ * A `Lookup` function that, given parameters, returns an Effect that will either
+ * produce a value or fail with an error.
+ *
+ * @since 1.0.0
+ * @category models
+ */
+export type Lookup<Params extends Record<string, unknown>, Value, Error = never, R = never> = (
+  params: Params
+) => Effect.Effect<Value, Error, R>
+
+/**
+ * Constructs a new FuzzyCache with the specified capacity, time to live, fuzzy config,
+ * and lookup function.
  *
  * The FuzzyCache organizes entries into buckets based on exact-match parameters,
  * then scores entries within each bucket using fuzzy-match parameters. This allows
@@ -67,7 +194,8 @@ export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error
  * @category constructors
  * @example
  * ```typescript
- * import { FuzzyCache } from "./FuzzyCache"
+ * import * as FuzzyCache from "./FuzzyCache"
+ * import * as Matchers from "./Matchers"
  * import { Effect, Duration } from "effect"
  *
  * interface SearchParams {
@@ -78,29 +206,11 @@ export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error
  *
  * const cache = FuzzyCache.make({
  *   lookup: (params: SearchParams) =>
- *     Effect.succeed([`Result for ${params.query}`]),
+ *     Effect.succeed(`Result for ${params.query}`),
  *   config: {
- *     userId: { _tag: "Exact" },
- *     query: {
- *       _tag: "Fuzzy",
- *       scorer: (cached, query) => {
- *         // Simple string similarity
- *         if (cached === query) return 1.0
- *         if (typeof cached === "string" && typeof query === "string") {
- *           return cached.toLowerCase().includes(query.toLowerCase()) ? 0.7 : 0.3
- *         }
- *         return 0
- *       }
- *     },
- *     maxResults: {
- *       _tag: "Fuzzy",
- *       scorer: (cached, query) => {
- *         if (typeof cached === "number" && typeof query === "number") {
- *           return 1 - Math.abs(cached - query) / Math.max(cached, query)
- *         }
- *         return 0
- *       }
- *     }
+ *     userId: Matchers.Exact(),
+ *     query: Matchers.levenshtein(0.3),
+ *     maxResults: Matchers.numeric(5)
  *   },
  *   capacity: 100,
  *   timeToLive: Duration.minutes(5)
@@ -111,52 +221,199 @@ export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error
  *   const fuzzyCache = yield* cache
  *
  *   // First call will invoke lookup
- *   const results = yield* fuzzyCache.get({
+ *   const value = yield* fuzzyCache.get({
  *     userId: "user123",
  *     query: "hello",
  *     maxResults: 10
  *   })
  *
- *   // Similar query will return scored cached results
- *   const fuzzyResults = yield* fuzzyCache.get({
+ *   // Similar query will return cached result (best match)
+ *   const cachedValue = yield* fuzzyCache.get({
  *     userId: "user123",
- *     query: "hello world",
- *     maxResults: 12
+ *     query: "hello world",  // Similar to "hello"
+ *     maxResults: 12  // Within numeric tolerance of 10
  *   })
  *
- *   console.log(fuzzyResults[0].score) // e.g., 0.85
+ *   // Get all matches above threshold
+ *   const allMatches = yield* fuzzyCache.getAll(
+ *     { userId: "user123", query: "hello", maxResults: 10 },
+ *     0.7  // Minimum score threshold
+ *   )
  * })
  * ```
  */
-export const make = <Params extends Record<string, unknown>, Value, Error, R>(
+export const make = <Params extends Record<string, unknown>, Value, Error = never, R = never>(
   options: {
-    readonly lookup: (params: Params) => Effect.Effect<Value, Error, R>
+    readonly lookup: Lookup<Params, Value, Error, R>
     readonly config: FuzzyConfig<Params>
     readonly capacity: number
     readonly timeToLive: Duration.DurationInput
   }
 ): Effect.Effect<FuzzyCache<Params, Value, Error>, never, R> =>
+  makeWith({
+    lookup: options.lookup,
+    config: options.config,
+    capacity: options.capacity,
+    timeToLive: () => options.timeToLive
+  })
+
+/**
+ * Constructs a new FuzzyCache where the time to live can depend on the `Exit` value
+ * returned by the lookup function.
+ *
+ * This allows different TTLs for successful vs failed lookups, or dynamic TTLs based
+ * on the computed value.
+ *
+ * @since 1.0.0
+ * @category constructors
+ * @example
+ * ```typescript
+ * import * as FuzzyCache from "./FuzzyCache"
+ * import * as Matchers from "./Matchers"
+ * import { Effect, Duration, Exit } from "effect"
+ *
+ * const cache = FuzzyCache.makeWith({
+ *   lookup: (params: { key: string }) =>
+ *     Effect.succeed(`value-${params.key}`),
+ *   config: {
+ *     key: Matchers.Exact()
+ *   },
+ *   capacity: 100,
+ *   timeToLive: (exit) =>
+ *     Exit.isSuccess(exit)
+ *       ? Duration.minutes(10)  // Cache successes for 10 minutes
+ *       : Duration.seconds(30)  // Cache failures for 30 seconds
+ * })
+ * ```
+ */
+export const makeWith = <Params extends Record<string, unknown>, Value, Error = never, R = never>(
+  options: {
+    readonly lookup: Lookup<Params, Value, Error, R>
+    readonly config: FuzzyConfig<Params>
+    readonly capacity: number
+    readonly timeToLive: (exit: Exit.Exit<Value, Error>) => Duration.DurationInput
+  }
+): Effect.Effect<FuzzyCache<Params, Value, Error>, never, R> =>
   Effect.gen(function* () {
+    // Capture the current context to provide R when calling lookup
+    const context = yield* Effect.context<R>()
+
     // Create underlying Cache for bucket storage
     // Each bucket key maps to a Set of cache entries
     const bucketCache = yield* Cache.make<BucketKey, Set<CacheEntry<Value>>>({
       capacity: options.capacity,
-      timeToLive: options.timeToLive,
+      timeToLive: Duration.infinity,  // We manage TTL per entry
       lookup: () => Effect.succeed(new Set<CacheEntry<Value>>())
     })
 
+    // Helper: Find best matching entry in bucket
+    const findBestMatch = (
+      bucket: Set<CacheEntry<Value>>,
+      params: Params
+    ): Option.Option<ScoredResult<Value>> => {
+      if (bucket.size === 0) return Option.none()
+
+      return pipe(
+        Array.fromIterable(bucket),
+        Array.map((entry) => ({
+          value: entry.value,
+          score: scoreEntry(entry, params, options.config),
+          params: entry.params
+        })),
+        Array.sort(OrderByScore),
+        Option.fromIterable
+      )
+
+    }
+
     return {
-      get: (params: Params) =>
+      [FuzzyCacheTypeId]: FuzzyCacheTypeId,
+      [Cache.CacheTypeId]: cacheVariance,
+      [Cache.ConsumerCacheTypeId]: consumerCacheVariance,
+
+      get: (params: Params): Effect.Effect<Value, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
+          const bucket = yield* bucketCache.get(bucketKey)
 
-          // Get bucket from Effect's Cache
+          // Try to find existing match
+          const existing = findBestMatch(bucket, params)
+          if (Option.isSome(existing)) {
+            return existing.value.value
+          }
+
+          // No match found, call lookup
+          const value: Value = yield* Effect.provide(options.lookup(params), context)
+          const entry: CacheEntry<Value> = {
+            id: generateId(),
+            params,
+            value,
+            timestamp: Date.now()
+          }
+          bucket.add(entry)
+          return value
+        }),
+
+      getEither: (params: Params): Effect.Effect<Either.Either<Value, Value>, Error> =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucket = yield* bucketCache.get(bucketKey)
+
+          // Try to find existing match
+          const existing = findBestMatch(bucket, params)
+          if (Option.isSome(existing)) {
+            return Either.left(existing.value.value)
+          }
+
+          // No match found, call lookup
+          const value: Value = yield* Effect.provide(options.lookup(params), context)
+          const entry: CacheEntry<Value> = {
+            id: generateId(),
+            params,
+            value,
+            timestamp: Date.now()
+          }
+          bucket.add(entry)
+          return Either.right(value)
+        }),
+
+      getOption: (params: Params) =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+
+          if (Option.isNone(bucketOption)) {
+            return Option.none()
+          }
+
+          return Option.map(findBestMatch(bucketOption.value, params), (scored) => scored.value)
+        }),
+
+      getOptionComplete: (params: Params) =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+
+          if (Option.isNone(bucketOption)) {
+            return Option.none()
+          }
+
+          return Option.map(findBestMatch(bucketOption.value, params), (scored) => scored.value)
+        }),
+
+      getAll: (params: Params, threshold = 0.0): Effect.Effect<Array<ScoredResult<Value>>, Error> =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
 
           // If bucket is empty, call lookup and store result
           if (bucket.size === 0) {
-            const value = yield* options.lookup(params)
+            const value: Value = yield* Effect.provide(options.lookup(params), context)
             const entry: CacheEntry<Value> = {
               id: generateId(),
               params,
@@ -167,23 +424,27 @@ export const make = <Params extends Record<string, unknown>, Value, Error, R>(
             return [{ value, score: 1.0, params }]
           }
 
-          // Score each entry in the bucket
-          const scored = Array.from(bucket).map((entry) => ({
-            value: entry.value,
-            score: scoreEntry(entry, params, options.config),
-            params: entry.params
-          }))
+          // Score and filter by threshold
+          const scored = Array.fromIterable(bucket)
+            .map((entry) => ({
+              value: entry.value,
+              score: scoreEntry(entry, params, options.config),
+              params: entry.params
+            }))
+            .filter((result) => result.score >= threshold)
+            .sort((a, b) => b.score - a.score)
 
-          // Sort by score descending (highest score first)
-          return scored.sort((a, b) => b.score - a.score)
-        }) as Effect.Effect<Array<ScoredResult<Value>>, Error, never>,
+          return scored
+        }),
 
-      set: (params: Params, value: Value) =>
+      refresh: (params: Params): Effect.Effect<void, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
 
+          // Always call lookup
+          const value: Value = yield* Effect.provide(options.lookup(params), context)
           const entry: CacheEntry<Value> = {
             id: generateId(),
             params,
@@ -193,12 +454,168 @@ export const make = <Params extends Record<string, unknown>, Value, Error, R>(
           bucket.add(entry)
         }),
 
+      set: (params: Params, value: Value) =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucket = yield* bucketCache.get(bucketKey)
+
+          // Check if an entry with identical params already exists
+          const existingEntry = Array.findFirst(
+            Array.fromIterable(bucket),
+            (entry) => {
+              // Use Effect's Equal.equals for deep equality comparison
+              return Object.keys(params).length === Object.keys(entry.params).length &&
+                Object.keys(params).every((key) =>
+                  Equal.equals(params[key], entry.params[key])
+                )
+            }
+          )
+
+          if (Option.isSome(existingEntry)) {
+            // Update existing entry's value and timestamp
+            bucket.delete(existingEntry.value)
+            const updatedEntry: CacheEntry<Value> = {
+              id: existingEntry.value.id,
+              params,
+              value,
+              timestamp: Date.now()
+            }
+            bucket.add(updatedEntry)
+          } else {
+            // Add new entry
+            const entry: CacheEntry<Value> = {
+              id: generateId(),
+              params,
+              value,
+              timestamp: Date.now()
+            }
+            bucket.add(entry)
+          }
+        }),
+
+      cacheStats: bucketCache.cacheStats,
+
+      contains: (params: Params) =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+
+          if (Option.isNone(bucketOption)) {
+            return false
+          }
+
+          return bucketOption.value.size > 0
+        }),
+
+      entryStats: (params: Params) =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+
+          if (Option.isNone(bucketOption)) {
+            return Option.none()
+          }
+
+          const bestMatch = findBestMatch(bucketOption.value, params)
+          if (Option.isNone(bestMatch)) {
+            return Option.none()
+          }
+
+          // Find the actual entry to get timestamp
+          const entry = Array.findFirst(
+            Array.fromIterable(bucketOption.value),
+            (e) => e.value === bestMatch.value.value
+          )
+
+          if (Option.isNone(entry)) {
+            return Option.none()
+          }
+
+          return Option.some(Cache.makeEntryStats(entry.value.timestamp))
+        }),
+
+      invalidate: (params: Params) =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+
+          if (Option.isNone(bucketOption)) {
+            return
+          }
+
+          const bucket = bucketOption.value
+          const bestMatch = findBestMatch(bucket, params)
+
+          if (Option.isSome(bestMatch)) {
+            // Remove the best matching entry
+            const entryToRemove = Array.findFirst(
+              Array.fromIterable(bucket),
+              (entry) => entry.value === bestMatch.value.value
+            )
+
+            if (Option.isSome(entryToRemove)) {
+              bucket.delete(entryToRemove.value)
+            }
+          }
+        }),
+
+      invalidateWhen: (params: Params, predicate: Predicate.Predicate<Value>) =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = createBucketKey(exact)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+
+          if (Option.isNone(bucketOption)) {
+            return
+          }
+
+          const bucket = bucketOption.value
+          const bestMatch = findBestMatch(bucket, params)
+
+          if (Option.isSome(bestMatch) && predicate(bestMatch.value.value)) {
+            // Remove the best matching entry if predicate holds
+            const entryToRemove = Array.findFirst(
+              Array.fromIterable(bucket),
+              (entry) => entry.value === bestMatch.value.value
+            )
+
+            if (Option.isSome(entryToRemove)) {
+              bucket.delete(entryToRemove.value)
+            }
+          }
+        }),
+
       invalidateAll: bucketCache.invalidateAll,
 
       size: Effect.gen(function* () {
-        // Get all buckets and sum their sizes
         const buckets = yield* bucketCache.values
         return buckets.reduce((sum, bucket) => sum + bucket.size, 0)
+      }),
+
+      keys: Effect.gen(function* () {
+        const buckets = yield* bucketCache.entries
+        return Array.flatMap(buckets, ([_, bucket]) =>
+          Array.map(Array.fromIterable(bucket), (entry) => entry.params as Params)
+        )
+      }),
+
+      values: Effect.gen(function* () {
+        const buckets = yield* bucketCache.values
+        return Array.flatMap(buckets, (bucket) =>
+          Array.map(Array.fromIterable(bucket), (entry) => entry.value)
+        )
+      }),
+
+      entries: Effect.gen(function* () {
+        const buckets = yield* bucketCache.values
+        return Array.flatMap(buckets, (bucket) =>
+          Array.map(Array.fromIterable(bucket), (entry) => [entry.params as Params, entry.value] as [Params, Value])
+        )
       })
     }
   })
+

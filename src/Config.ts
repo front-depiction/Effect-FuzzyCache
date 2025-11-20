@@ -56,8 +56,8 @@ type FuzzyCacheErrors = never;
 class FuzzyCache { }
 
 export const with_ = <Params extends Record<string, unknown>, A, E, R>(
-  fn: (params: Params) => Effect.Effect<A, E, R>,
-  config: {
+  _fn: (params: Params) => Effect.Effect<A, E, R>,
+  _config: {
     params: {
       [P in keyof Params]: InputConfig;
     },

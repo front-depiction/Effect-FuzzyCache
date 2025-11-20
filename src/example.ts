@@ -31,38 +31,56 @@ const program = Effect.gen(function* () {
 
   // First question - cache miss
   console.log("1. First question (cache miss):")
-  const result1 = yield* cache.get({
+  const answer1 = yield* cache.get({
     url: "https://wikipedia.org/wiki/France",
     prompt: "What is the capital of France?"
   })
-  console.log(`   Score: ${result1[0]?.score}`)
-  console.log(`   Answer: ${result1[0]?.value.answer}\n`)
+  console.log(`   Answer: ${answer1.answer}\n`)
 
   // Same question - exact cache hit
-  console.log("2. Same question (exact hit, score = 1.0):")
-  const result2 = yield* cache.get({
+  console.log("2. Same question (exact cache hit):")
+  const answer2 = yield* cache.get({
     url: "https://wikipedia.org/wiki/France",
     prompt: "What is the capital of France?"
   })
-  console.log(`   Score: ${result2[0]?.score}`)
-  console.log(`   Results: ${result2.length}\n`)
+  console.log(`   Answer: ${answer2.answer}`)
+  console.log(`   (No fetch log - served from cache)\n`)
 
   // Similar question - fuzzy match
   console.log("3. Similar question (fuzzy match):")
-  const result3 = yield* cache.get({
+  const answer3 = yield* cache.get({
     url: "https://wikipedia.org/wiki/France",
     prompt: "What is the capital city of France?"
   })
-  console.log(`   Score: ${result3[0]?.score}`)
-  console.log(`   Results: ${result3.length}\n`)
+  console.log(`   Answer: ${answer3.answer}`)
+  console.log(`   (Fuzzy matched to cached entry)\n`)
+
+  // Get all matching entries with scores
+  console.log("4. Get all matches with scores:")
+  const allMatches = yield* cache.getAll({
+    url: "https://wikipedia.org/wiki/France",
+    prompt: "What is the capital city of France?"
+  })
+  console.log(`   Found ${allMatches.length} matches:`)
+  allMatches.forEach((match, i) => {
+    console.log(`   ${i + 1}. Score: ${match.score.toFixed(2)} - "${match.params.prompt}"`)
+  })
+  console.log()
 
   // Different URL - cache miss (URL is exact match)
-  console.log("4. Different URL (cache miss):")
-  const result4 = yield* cache.get({
+  console.log("5. Different URL (cache miss):")
+  const answer4 = yield* cache.get({
     url: "https://wikipedia.org/wiki/Germany",
     prompt: "What is the capital of France?"
   })
-  console.log(`   Score: ${result4[0]?.score}\n`)
+  console.log(`   Answer: ${answer4.answer}\n`)
+
+  // Cache stats
+  console.log("6. Cache statistics:")
+  const stats = yield* cache.cacheStats
+  console.log(`   Hits: ${stats.hits}`)
+  console.log(`   Misses: ${stats.misses}`)
+  console.log(`   Size: ${stats.size}\n`)
 
   console.log("=== Example Complete ===\n")
 })

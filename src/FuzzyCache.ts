@@ -4,6 +4,7 @@
  * @since 1.0.0
  */
 import * as Cache from "effect/Cache"
+import * as Clock from "effect/Clock"
 import * as Effect from "effect/Effect"
 import * as Duration from "effect/Duration"
 import * as Option from "effect/Option"
@@ -11,8 +12,7 @@ import * as Either from "effect/Either"
 import * as Equal from "effect/Equal"
 import * as Predicate from "effect/Predicate"
 import * as Array from "effect/Array"
-import type * as Types from "effect/Types"
-import type * as Exit from "effect/Exit"
+import * as Exit from "effect/Exit"
 import {
   type BucketKey,
   type CacheEntry,
@@ -21,10 +21,10 @@ import {
   createBucketKey,
   scoreEntry,
   generateId,
+  hasExpired,
   consumerCacheVariance,
   cacheVariance
 } from "./internal.js"
-import { Order, pipe } from "effect"
 
 /**
  * @since 1.0.0
@@ -49,7 +49,6 @@ export interface ScoredResult<Value> {
   readonly score: number
   readonly params: Record<string, unknown>
 }
-const OrderByScore: Order.Order<ScoredResult<unknown>> = Order.mapInput(Order.number, result => result.score)
 
 /**
  * FuzzyCache extends Effect's Cache interface with fuzzy parameter matching.
@@ -248,13 +247,15 @@ export const make = <Params extends Record<string, unknown>, Value, Error = neve
     readonly config: FuzzyConfig<Params>
     readonly capacity: number
     readonly timeToLive: Duration.DurationInput
+    readonly minScore?: number
   }
 ): Effect.Effect<FuzzyCache<Params, Value, Error>, never, R> =>
   makeWith({
     lookup: options.lookup,
     config: options.config,
     capacity: options.capacity,
-    timeToLive: () => options.timeToLive
+    timeToLive: () => options.timeToLive,
+    ...(options.minScore !== undefined && { minScore: options.minScore })
   })
 
 /**
@@ -292,6 +293,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
     readonly config: FuzzyConfig<Params>
     readonly capacity: number
     readonly timeToLive: (exit: Exit.Exit<Value, Error>) => Duration.DurationInput
+    readonly minScore?: number
   }
 ): Effect.Effect<FuzzyCache<Params, Value, Error>, never, R> =>
   Effect.gen(function* () {
@@ -306,24 +308,38 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
       lookup: () => Effect.succeed(new Set<CacheEntry<Value>>())
     })
 
+    // Helper: Compute TTL in milliseconds from Exit
+    const computeTTL = (exit: Exit.Exit<Value, Error>): number =>
+      Duration.toMillis(
+        typeof options.timeToLive === 'function'
+          ? options.timeToLive(exit)
+          : options.timeToLive
+      )
+
     // Helper: Find best matching entry in bucket
     const findBestMatch = (
       bucket: Set<CacheEntry<Value>>,
-      params: Params
+      params: Params,
+      now: number
     ): Option.Option<ScoredResult<Value>> => {
       if (bucket.size === 0) return Option.none()
 
-      return pipe(
-        Array.fromIterable(bucket),
-        Array.map((entry) => ({
+      const minScoreThreshold = options.minScore ?? 0.0
+
+      const scored = Array.fromIterable(bucket)
+        // Filter out expired entries
+        .filter((entry) => !hasExpired(entry, now))
+        // Score remaining entries
+        .map((entry) => ({
           value: entry.value,
           score: scoreEntry(entry, params, options.config),
           params: entry.params
-        })),
-        Array.sort(OrderByScore),
-        Option.fromIterable
-      )
+        }))
+        // Filter by minimum score threshold
+        .filter((result) => result.score >= minScoreThreshold)
+        .sort((a, b) => b.score - a.score)
 
+      return Option.fromNullable(scored[0])
     }
 
     return {
@@ -336,9 +352,10 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
+          const now = yield* Clock.currentTimeMillis
 
           // Try to find existing match
-          const existing = findBestMatch(bucket, params)
+          const existing = findBestMatch(bucket, params, now)
           if (Option.isSome(existing)) {
             return existing.value.value
           }
@@ -349,7 +366,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             id: generateId(),
             params,
             value,
-            timestamp: Date.now()
+            timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
+            loadedMillis: now
           }
           bucket.add(entry)
           return value
@@ -360,9 +378,10 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
+          const now = yield* Clock.currentTimeMillis
 
           // Try to find existing match
-          const existing = findBestMatch(bucket, params)
+          const existing = findBestMatch(bucket, params, now)
           if (Option.isSome(existing)) {
             return Either.left(existing.value.value)
           }
@@ -373,7 +392,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             id: generateId(),
             params,
             value,
-            timestamp: Date.now()
+            timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
+            loadedMillis: now
           }
           bucket.add(entry)
           return Either.right(value)
@@ -389,7 +409,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             return Option.none()
           }
 
-          return Option.map(findBestMatch(bucketOption.value, params), (scored) => scored.value)
+          const now = yield* Clock.currentTimeMillis
+          return Option.map(findBestMatch(bucketOption.value, params, now), (scored) => scored.value)
         }),
 
       getOptionComplete: (params: Params) =>
@@ -402,7 +423,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             return Option.none()
           }
 
-          return Option.map(findBestMatch(bucketOption.value, params), (scored) => scored.value)
+          const now = yield* Clock.currentTimeMillis
+          return Option.map(findBestMatch(bucketOption.value, params, now), (scored) => scored.value)
         }),
 
       getAll: (params: Params, threshold = 0.0): Effect.Effect<Array<ScoredResult<Value>>, Error> =>
@@ -410,22 +432,28 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
+          const now = yield* Clock.currentTimeMillis
 
-          // If bucket is empty, call lookup and store result
-          if (bucket.size === 0) {
+          // Filter out expired entries first
+          const validEntries = Array.fromIterable(bucket)
+            .filter((entry) => !hasExpired(entry, now))
+
+          // If no valid entries, call lookup and store result
+          if (validEntries.length === 0) {
             const value: Value = yield* Effect.provide(options.lookup(params), context)
             const entry: CacheEntry<Value> = {
               id: generateId(),
               params,
               value,
-              timestamp: Date.now()
+              timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
+            loadedMillis: now
             }
             bucket.add(entry)
             return [{ value, score: 1.0, params }]
           }
 
-          // Score and filter by threshold
-          const scored = Array.fromIterable(bucket)
+          // Score and filter by per-call threshold
+          const scored = validEntries
             .map((entry) => ({
               value: entry.value,
               score: scoreEntry(entry, params, options.config),
@@ -442,6 +470,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
+          const now = yield* Clock.currentTimeMillis
 
           // Always call lookup
           const value: Value = yield* Effect.provide(options.lookup(params), context)
@@ -449,7 +478,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             id: generateId(),
             params,
             value,
-            timestamp: Date.now()
+            timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
+            loadedMillis: now
           }
           bucket.add(entry)
         }),
@@ -459,6 +489,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
+          const now = yield* Clock.currentTimeMillis
 
           // Check if an entry with identical params already exists
           const existingEntry = Array.findFirst(
@@ -479,7 +510,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
               id: existingEntry.value.id,
               params,
               value,
-              timestamp: Date.now()
+              timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
+            loadedMillis: now
             }
             bucket.add(updatedEntry)
           } else {
@@ -488,7 +520,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
               id: generateId(),
               params,
               value,
-              timestamp: Date.now()
+              timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
+            loadedMillis: now
             }
             bucket.add(entry)
           }
@@ -519,7 +552,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             return Option.none()
           }
 
-          const bestMatch = findBestMatch(bucketOption.value, params)
+          const now = yield* Clock.currentTimeMillis
+          const bestMatch = findBestMatch(bucketOption.value, params, now)
           if (Option.isNone(bestMatch)) {
             return Option.none()
           }
@@ -534,7 +568,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             return Option.none()
           }
 
-          return Option.some(Cache.makeEntryStats(entry.value.timestamp))
+          return Option.some(Cache.makeEntryStats(entry.value.loadedMillis))
         }),
 
       invalidate: (params: Params) =>
@@ -548,7 +582,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           }
 
           const bucket = bucketOption.value
-          const bestMatch = findBestMatch(bucket, params)
+          const now = yield* Clock.currentTimeMillis
+          const bestMatch = findBestMatch(bucket, params, now)
 
           if (Option.isSome(bestMatch)) {
             // Remove the best matching entry
@@ -574,7 +609,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           }
 
           const bucket = bucketOption.value
-          const bestMatch = findBestMatch(bucket, params)
+          const now = yield* Clock.currentTimeMillis
+          const bestMatch = findBestMatch(bucket, params, now)
 
           if (Option.isSome(bestMatch) && predicate(bestMatch.value.value)) {
             // Remove the best matching entry if predicate holds

@@ -101,8 +101,18 @@ export interface CacheEntry<Value> {
   readonly id: string
   readonly params: Record<string, unknown>
   readonly value: Value
-  readonly timestamp: number
+  readonly timeToLiveMillis: number  // Absolute expiration timestamp (now + ttl)
+  readonly loadedMillis: number  // Timestamp when entry was created/loaded
 }
+
+/**
+ * Check if a cache entry has expired
+ *
+ * @since 1.0.0
+ * @category utilities
+ */
+export const hasExpired = <Value>(entry: CacheEntry<Value>, now: number): boolean =>
+  now >= entry.timeToLiveMillis
 
 /**
  * Partition parameters into exact-match and fuzzy-match groups

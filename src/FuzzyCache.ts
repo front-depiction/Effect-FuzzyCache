@@ -9,9 +9,11 @@ import * as Duration from "effect/Duration"
 import * as Option from "effect/Option"
 import * as Either from "effect/Either"
 import * as Predicate from "effect/Predicate"
+import * as Array from "effect/Array"
 import * as Exit from "effect/Exit"
 import type { FuzzyConfig } from "./internal/config.js"
 import * as Impl from "./internal/fuzzycache.js"
+import { ScoredResult } from "./internal/entry.js"
 
 /**
  * @since 1.0.0
@@ -25,17 +27,7 @@ export const FuzzyCacheTypeId: unique symbol = Symbol.for("@effect/FuzzyCache")
  */
 export type FuzzyCacheTypeId = typeof FuzzyCacheTypeId
 
-/**
- * A scored result containing the cached value, its relevance score, and original parameters
- *
- * @since 1.0.0
- * @category models
- */
-export interface ScoredResult<Value> {
-  readonly value: Value
-  readonly score: number
-  readonly params: Record<string, unknown>
-}
+
 
 /**
  * FuzzyCache extends Effect's Cache interface with fuzzy parameter matching.
@@ -89,10 +81,13 @@ export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error
    * Retrieves all cached values matching the given parameters above the specified threshold,
    * sorted by score (highest first).
    *
+   * Does not trigger lookups - only returns existing cached entries.
+   *
    * @param params - Query parameters to match against
    * @param threshold - Minimum score threshold (0.0 to 1.0). Defaults to 0.0 (return all)
+   * @returns Array of scored results (empty if no matches found)
    */
-  getAll(params: Params, threshold?: number): Effect.Effect<Array<ScoredResult<Value>>, Error>
+  getAll(params: Params, threshold?: number): Effect.Effect<Array<ScoredResult<Value>>>
 
   /**
    * Forces recomputation of the value for the given parameters.

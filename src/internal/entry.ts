@@ -36,6 +36,18 @@ const Proto = {
   }
 }
 
+/**
+ * A scored result containing the cached value, its relevance score, and original parameters
+ *
+ * @since 1.0.0
+ * @category models
+ */
+export interface ScoredResult<Value> {
+  readonly value: Value
+  readonly score: number
+  readonly params: Record<string, unknown>
+}
+
 export const complete = <Value, Error = never>(
   params: Record<string, unknown>,
   value: Value,

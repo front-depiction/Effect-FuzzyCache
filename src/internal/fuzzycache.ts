@@ -226,12 +226,19 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           )
         }),
 
-      getAll: (params: Params, threshold = 0.0): Effect.Effect<Array<any>, Error> =>
+      getAll: (params: Params, threshold = 0.0): Effect.Effect<Array<EntryValue.ScoredResult<Value>>> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
           const bucketKey = makeBucketKey(exact)
-          const bucket = yield* bucketCache.get(bucketKey)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
           const now = yield* Clock.currentTimeMillis
+
+          // If no bucket exists, return empty array (don't trigger lookup)
+          if (Option.isNone(bucketOption)) {
+            return []
+          }
+
+          const bucket = bucketOption.value
 
           for (let i = bucket.length - 1; i >= 0; i--) {
             const entry = bucket[i]
@@ -240,20 +247,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             }
           }
 
-          if (bucket.length === 0) {
-            const value: Value = yield* Effect.provide(options.lookup(params), context)
-            const entry = EntryValue.complete<Value, Error>(
-              params,
-              value,
-              now + computeTTLFn(Exit.succeed(value)),
-              now
-            )
-            addEntryWithEviction(bucket, entry, options.capacity.list)
-            return [{ value, score: 1.0, params }]
-          }
-
           const effectiveThreshold = Math.max(threshold, options.minScore)
-          return pipe(
+          const filtered = pipe(
             bucket,
             Array.filter(EntryValue.isComplete),
             Array.filterMap((entry) =>
@@ -269,6 +264,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             ),
             Array.sortWith((entry) => entry.score, Order.number)
           )
+
+          return filtered
         }),
 
       refresh: (params: Params): Effect.Effect<void, Error> =>

@@ -22,7 +22,7 @@ import * as Clock from "effect/Clock"
 import * as Deferred from "effect/Deferred"
 import { Arbitrary, FastCheck as fc } from "effect"
 import * as FuzzyCache from "./FuzzyCache.js"
-import * as Matchers from "./Matchers.js"
+import * as Matchers from "./Matcher.js"
 
 // ============================================================================
 // Property-based tests
@@ -205,7 +205,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
   })
 
   describe("Numeric Matcher Properties", () => {
-    it("should return score 1.0 for values within tolerance", async () => {
+    it("should return score > 1.0 for values within tolerance", async () => {
       const arb = Arbitrary.make(Schema.Number.pipe(Schema.between(0, 1000)))
 
       await fc.assert(
@@ -229,15 +229,15 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const queryValue = baseValue + 5
             const results = yield* cache.getAll({ value: queryValue })
 
-            // Should have score 1.0 since within tolerance
-            assert.strictEqual(results[0]?.score, 1.0)
+            // Should have score 0.5 (diff=5, tolerance=10, punishment = 5/10 score = 1.0 - 0.5  = 0.5)
+            assert.strictEqual(results[0]?.score, 0.5)
           }).pipe(Effect.runPromise)
         }),
         { numRuns: 500 }
       )
     })
 
-    it("should have score 0 for values at 2x tolerance", async () => {
+    it("should return no results for values beyond tolerance", async () => {
       const arb = Arbitrary.make(Schema.Number.pipe(Schema.between(100, 1000)))
 
       await fc.assert(
@@ -257,11 +257,11 @@ describe("FuzzyCache - Property-Based Tests", () => {
             // Cache base value
             yield* cache.set({ value: baseValue }, `result-${baseValue}`)
 
-            // Query with value at 2x tolerance
-            const queryValue = baseValue + (tolerance * 2)
+            // Query with value beyond tolerance (diff > tolerance)
+            const queryValue = baseValue + tolerance + 1
             const results = yield* cache.getAll({ value: queryValue })
 
-            // Should return no results at 2x tolerance (filtered out by Option.none)
+            // Should return no results beyond tolerance (filtered out by Option.none)
             assert.strictEqual(results.length, 0)
           }).pipe(Effect.runPromise)
         }),
@@ -289,18 +289,20 @@ describe("FuzzyCache - Property-Based Tests", () => {
             // Cache base value
             yield* cache.set({ value: baseValue }, `result-${baseValue}`)
 
-            // Test increasing distances
-            const results1 = yield* cache.getAll({ value: baseValue + 5 })
-            const results2 = yield* cache.getAll({ value: baseValue + 15 })
-            const results3 = yield* cache.getAll({ value: baseValue + 25 })
+            // Test increasing distances within and beyond tolerance
+            const results1 = yield* cache.getAll({ value: baseValue + 5 })  // diff=5, score=1.75
+            const results2 = yield* cache.getAll({ value: baseValue + 15 }) // diff=15, score=1.25
+            const results3 = yield* cache.getAll({ value: baseValue + 25 }) // diff=25 > tolerance, no results
 
             const score1 = results1[0]?.score ?? 0
             const score2 = results2[0]?.score ?? 0
             const score3 = results3[0]?.score ?? 0
 
             // Scores should decrease as distance increases
+            // Within tolerance: scores > 1.0, beyond tolerance: score = 0 (no match)
             assert.isTrue(score1 >= score2)
             assert.isTrue(score2 >= score3)
+            assert.strictEqual(score3, 0) // Beyond tolerance returns no results
           }).pipe(Effect.runPromise)
         }),
         { numRuns: 300 }
@@ -1200,10 +1202,9 @@ describe("FuzzyCache - TTL Expiration", () => {
       // Expire entries
       yield* TestClock.adjust(Duration.seconds(6))
 
-      // Should trigger lookup (no valid entries)
+      // getAll should return empty array (expired entries filtered, no lookup triggered)
       const results2 = yield* cache.getAll({ text: "test" })
-      assert.strictEqual(results2.length, 1)
-      assert.strictEqual(results2[0]?.value, "result-test")
+      assert.strictEqual(results2.length, 0)
     }))
 
   it.effect("should not return expired entries in getOption", () =>
@@ -1845,6 +1846,118 @@ describe("FuzzyCache - Max Capacity with Expiration-Based Eviction", () => {
         const optionAfter = yield* cache.getOptionComplete({ key: "test" })
         assert.isTrue(Option.isSome(optionAfter))
       }))
+  })
+
+  describe("All-Exact Configuration (No Fuzzy Matchers)", () => {
+    it("should work as regular cache with all exact matchers", () =>
+      Effect.gen(function* () {
+        let lookupCount = 0
+        const lookup = (params: { userId: string; sessionId: string }) => {
+          lookupCount++
+          return Effect.succeed(`user:${params.userId},session:${params.sessionId}`)
+        }
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: {
+            userId: Matchers.Exact(),
+            sessionId: Matchers.Exact()
+          },
+          capacity: { bucket: 10, list: 10 },
+          timeToLive: Duration.infinity
+        })
+
+        // First call - cache miss
+        const result1 = yield* cache.get({ userId: "user1", sessionId: "sess1" })
+        assert.strictEqual(result1, "user:user1,session:sess1")
+        assert.strictEqual(lookupCount, 1)
+
+        // Second call with exact same params - cache hit
+        const result2 = yield* cache.get({ userId: "user1", sessionId: "sess1" })
+        assert.strictEqual(result2, "user:user1,session:sess1")
+        assert.strictEqual(lookupCount, 1) // No new lookup
+
+        // Third call with different params - cache miss (no fuzzy matching)
+        const result3 = yield* cache.get({ userId: "user1", sessionId: "sess2" })
+        assert.strictEqual(result3, "user:user1,session:sess2")
+        assert.strictEqual(lookupCount, 2) // New lookup required
+
+        // Fourth call with completely different params - cache miss
+        const result4 = yield* cache.get({ userId: "user2", sessionId: "sess1" })
+        assert.strictEqual(result4, "user:user2,session:sess1")
+        assert.strictEqual(lookupCount, 3) // New lookup required
+
+        const size = yield* cache.size
+        assert.strictEqual(size, 3) // Three distinct entries in different buckets
+      }).pipe(Effect.runPromise))
+
+    it("should return score 1.0 for all matches with exact-only config", () =>
+      Effect.gen(function* () {
+        const lookup = (params: { key: string; value: string }) =>
+          Effect.succeed(`${params.key}:${params.value}`)
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: {
+            key: Matchers.Exact(),
+            value: Matchers.Exact()
+          },
+          capacity: { bucket: 10, list: 10 },
+          timeToLive: Duration.infinity
+        })
+
+        // Add entries
+        yield* cache.get({ key: "a", value: "1" })
+        yield* cache.get({ key: "b", value: "2" })
+        yield* cache.get({ key: "c", value: "3" })
+
+        // Query for exact match - should return score 1.0
+        const results = yield* cache.getAll({ key: "b", value: "2" })
+        assert.strictEqual(results.length, 1)
+        assert.strictEqual(results[0]?.score, 1.0)
+        assert.strictEqual(results[0]?.value, "b:2")
+
+        // Query for non-existent entry - should return empty array (no lookup triggered)
+        const noResults = yield* cache.getAll({ key: "d", value: "4" })
+        assert.strictEqual(noResults.length, 0)
+      }).pipe(Effect.runPromise))
+
+    it("should behave as single-bucket with exact-only config", () =>
+      Effect.gen(function* () {
+        const lookup = (params: { bucket: string; item: string }) =>
+          Effect.succeed(`${params.bucket}/${params.item}`)
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: {
+            bucket: Matchers.Exact(),
+            item: Matchers.Exact()
+          },
+          capacity: { bucket: 4, list: 1 }, // Need 4 buckets - each unique exact combination creates its own bucket
+          timeToLive: Duration.infinity
+        })
+
+        // Add items - each unique combination creates its own bucket (all params are exact)
+        yield* cache.get({ bucket: "A", item: "1" })
+        yield* cache.get({ bucket: "A", item: "2" })
+        yield* cache.get({ bucket: "B", item: "1" })
+        yield* cache.get({ bucket: "B", item: "2" })
+
+        // Verify all entries exist
+        const sizeA1 = yield* cache.contains({ bucket: "A", item: "1" })
+        const sizeA2 = yield* cache.contains({ bucket: "A", item: "2" })
+        const sizeB1 = yield* cache.contains({ bucket: "B", item: "1" })
+        const sizeB2 = yield* cache.contains({ bucket: "B", item: "2" })
+
+        assert.strictEqual(sizeA1, true)
+        assert.strictEqual(sizeA2, true)
+        assert.strictEqual(sizeB1, true)
+        assert.strictEqual(sizeB2, true)
+
+        // Verify total size
+        const totalSize = yield* cache.size
+        assert.strictEqual(totalSize, 4)
+      }).pipe(Effect.runPromise))
   })
 
   describe("All-Fuzzy Configuration (No Exact Matchers)", () => {

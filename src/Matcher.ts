@@ -94,41 +94,33 @@ export const levenshtein = (threshold: number): ParamMatcher<string> =>
 
 /**
  * Creates a fuzzy numeric matcher with tolerance-based matching.
- *
- * Numbers within the tolerance range receive a score of 1.0. Numbers beyond the
- * tolerance decay proportionally, reaching 0.0 at double the tolerance distance.
+ * Numbers are discarded beyond tolerance, and scored based on the distance from the target.
  *
  * @param tolerance - Maximum absolute difference for a perfect match
  * @returns A fuzzy matcher for numeric parameters
  *
  * @since 1.0.0
  * @category constructors
- * @example
- * ```typescript
- * import * as Matchers from "./matchers"
- *
- * const priceMatcher = Matchers.numeric(10)
- *
- * // Query: 100
- * // Cached: 105 -> diff = 5, within tolerance -> score = 1.0
- * // Cached: 115 -> diff = 15, beyond tolerance -> score = 1.0 - ((15-10)/10) = 0.5
- * // Cached: 120 -> diff = 20, at 2x tolerance -> score = 0.0
- * // Cached: 125 -> diff = 25, beyond 2x tolerance -> score = 0.0
- * ```
  */
-export const numeric = (tolerance: number): ParamMatcher<number> =>
-  Fuzzy<number>((cached, query): Option.Option<number> => {
+export const numeric = (tolerance: number): ParamMatcher<number> => {
+  // Degenerate case: no tolerance -> only exact matches
+  if (tolerance <= 0) {
+    return Fuzzy<number>((cached, query) =>
+      cached === query ? Option.some(1.0) : Option.none()
+    )
+  }
+
+  const invTolerance = 1 / tolerance
+
+  return Fuzzy<number>((cached, query) => {
     const diff = Math.abs(cached - query)
 
-    // Within tolerance: perfect match
-    if (diff <= tolerance) return Option.some(1.0)
+    // Outside tolerance → no match
+    if (diff > tolerance) return Option.none()
 
-    // Beyond 2x tolerance: exclude entry entirely
-    if (diff >= 2 * tolerance) return Option.none()
-
-    // Between tolerance and 2x: decay proportionally
-    const excess = diff - tolerance
-    const score = 1.0 - (excess / tolerance)
-
+    // Inside tolerance: score from 1.0 (exact) down to 0.0 (at boundary)
+    const score = 1.0 - diff * invTolerance
     return Option.some(score)
   })
+}
+

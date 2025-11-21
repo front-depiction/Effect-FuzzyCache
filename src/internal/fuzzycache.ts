@@ -226,19 +226,12 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           )
         }),
 
-      getAll: (params: Params, threshold = 0.0): Effect.Effect<Array<EntryValue.ScoredResult<Value>>> =>
+      getAll: (params: Params, threshold = 0.0): Effect.Effect<Array.NonEmptyReadonlyArray<EntryValue.ScoredResult<Value>>, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
           const bucketKey = makeBucketKey(exact)
-          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+          const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
-
-          // If no bucket exists, return empty array (don't trigger lookup)
-          if (Option.isNone(bucketOption)) {
-            return []
-          }
-
-          const bucket = bucketOption.value
 
           for (let i = bucket.length - 1; i >= 0; i--) {
             const entry = bucket[i]
@@ -265,7 +258,56 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             Array.sortWith((entry) => entry.score, Order.number)
           )
 
-          return filtered
+          if (Array.isEmptyReadonlyArray(filtered)) {
+            fuzzyStatsTracker.trackMiss()
+            const value: Value = yield* Effect.provide(options.lookup(params), context)
+            const entry = EntryValue.complete<Value, Error>(
+              params,
+              value,
+              now + computeTTLFn(Exit.succeed(value)),
+              now
+            )
+            addEntryWithEviction(bucket, entry, options.capacity.list)
+            return [{ value, score: 1.0, params }]
+          }
+
+          fuzzyStatsTracker.trackHit()
+          return filtered as any
+        }),
+
+      getAllOption: (params: Params, threshold = 0.0): Effect.Effect<Array<EntryValue.ScoredResult<Value>>> =>
+        Effect.gen(function* () {
+          const { exact } = partitionParams(params, options.config)
+          const bucketKey = makeBucketKey(exact)
+          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+          const now = yield* Clock.currentTimeMillis
+
+          return pipe(
+            bucketOption,
+            Option.match({
+              onNone: () => [],
+              onSome: (bucket) => {
+                const effectiveThreshold = Math.max(threshold, options.minScore)
+                return pipe(
+                  bucket,
+                  Array.filter(EntryValue.isComplete),
+                  Array.filter((entry) => !EntryValue.hasExpired(now)(entry)),
+                  Array.filterMap((entry) =>
+                    pipe(
+                      scoreEntry(entry, params, options.config),
+                      Option.filter((score) => score >= effectiveThreshold),
+                      Option.map((score) => ({
+                        value: entry.value,
+                        score,
+                        params: entry.params
+                      }))
+                    )
+                  ),
+                  Array.sortWith((entry) => entry.score, Order.number)
+                )
+              }
+            })
+          )
         }),
 
       refresh: (params: Params): Effect.Effect<void, Error> =>

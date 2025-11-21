@@ -81,13 +81,25 @@ export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error
    * Retrieves all cached values matching the given parameters above the specified threshold,
    * sorted by score (highest first).
    *
-   * Does not trigger lookups - only returns existing cached entries.
+   * If no matches are found, triggers the lookup function and returns the newly computed value.
+   * This method is consistent with `get` behavior (triggers lookups on miss).
    *
    * @param params - Query parameters to match against
    * @param threshold - Minimum score threshold (0.0 to 1.0). Defaults to 0.0 (return all)
-   * @returns Array of scored results (empty if no matches found)
    */
-  getAll(params: Params, threshold?: number): Effect.Effect<Array<ScoredResult<Value>>>
+  getAll(params: Params, threshold?: number): Effect.Effect<Array.NonEmptyReadonlyArray<ScoredResult<Value>>, Error>
+
+  /**
+   * Retrieves all cached values matching the given parameters above the specified threshold,
+   * sorted by score (highest first). Read-only version that never triggers lookups.
+   *
+   * Returns an empty array if no cached matches exist.
+   * This method is consistent with `getOption` behavior (read-only, never triggers lookups).
+   *
+   * @param params - Query parameters to match against
+   * @param threshold - Minimum score threshold (0.0 to 1.0). Defaults to 0.0 (return all)
+   */
+  getAllOption(params: Params, threshold?: number): Effect.Effect<Array<ScoredResult<Value>>>
 
   /**
    * Forces recomputation of the value for the given parameters.

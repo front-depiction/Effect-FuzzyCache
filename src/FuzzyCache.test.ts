@@ -259,7 +259,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
 
             // Query with value beyond tolerance (diff > tolerance)
             const queryValue = baseValue + tolerance + 1
-            const results = yield* cache.getAll({ value: queryValue })
+            const results = yield* cache.getAllOption({ value: queryValue })
 
             // Should return no results beyond tolerance (filtered out by Option.none)
             assert.strictEqual(results.length, 0)
@@ -290,9 +290,9 @@ describe("FuzzyCache - Property-Based Tests", () => {
             yield* cache.set({ value: baseValue }, `result-${baseValue}`)
 
             // Test increasing distances within and beyond tolerance
-            const results1 = yield* cache.getAll({ value: baseValue + 5 })  // diff=5, score=1.75
-            const results2 = yield* cache.getAll({ value: baseValue + 15 }) // diff=15, score=1.25
-            const results3 = yield* cache.getAll({ value: baseValue + 25 }) // diff=25 > tolerance, no results
+            const results1 = yield* cache.getAllOption({ value: baseValue + 5 })  // diff=5, score=1.75
+            const results2 = yield* cache.getAllOption({ value: baseValue + 15 }) // diff=15, score=1.25
+            const results3 = yield* cache.getAllOption({ value: baseValue + 25 }) // diff=25 > tolerance, no results
 
             const score1 = results1[0]?.score ?? 0
             const score2 = results2[0]?.score ?? 0
@@ -890,6 +890,110 @@ describe("FuzzyCache - API Methods", () => {
       }))
   })
 
+  describe("getAllOption", () => {
+    it.effect("should return empty array when cache is empty", () =>
+      Effect.gen(function* () {
+        const lookup = (params: { key: string }) =>
+          Effect.succeed(`value-${params.key}`)
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: { key: Matchers.Exact() },
+          capacity: { bucket: 100, list: 10 },
+          timeToLive: Duration.infinity
+        })
+
+        const result = yield* cache.getAllOption({ key: "test" })
+        assert.strictEqual(result.length, 0)
+      }))
+
+    it.effect("should return cached values without triggering lookup", () =>
+      Effect.gen(function* () {
+        let lookupCount = 0
+        const lookup = (params: { text: string }) =>
+          Effect.sync(() => {
+            lookupCount++
+            return `value-${params.text}`
+          })
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: { text: Matchers.levenshtein(0.5) },
+          capacity: { bucket: 100, list: 10 },
+          timeToLive: Duration.infinity
+        })
+
+        // Populate cache
+        yield* cache.set({ text: "hello" }, "cached-hello")
+        yield* cache.set({ text: "hallo" }, "cached-hallo")
+
+        // getAllOption should return cached values without lookup
+        const results = yield* cache.getAllOption({ text: "hello" })
+        assert.strictEqual(lookupCount, 0)
+        assert.isTrue(results.length > 0)
+        assert.isTrue(results.some(r => r.value === "cached-hello"))
+      }))
+
+    it.effect("should not trigger lookup when no matches found", () =>
+      Effect.gen(function* () {
+        let lookupCount = 0
+        const lookup = (params: { key: string }) =>
+          Effect.sync(() => {
+            lookupCount++
+            return `value-${params.key}`
+          })
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: { key: Matchers.Exact() },
+          capacity: { bucket: 100, list: 10 },
+          timeToLive: Duration.infinity
+        })
+
+        // Populate cache with different key
+        yield* cache.set({ key: "a" }, "value-a")
+
+        // getAllOption should return empty array without triggering lookup
+        const results = yield* cache.getAllOption({ key: "b" })
+        assert.strictEqual(lookupCount, 0)
+        assert.strictEqual(results.length, 0)
+      }))
+
+    it.effect("should filter expired entries without triggering lookup", () =>
+      Effect.gen(function* () {
+        let lookupCount = 0
+        const lookup = (params: { text: string }) =>
+          Effect.sync(() => {
+            lookupCount++
+            return `value-${params.text}`
+          })
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: { text: Matchers.levenshtein(1.0) },
+          capacity: { bucket: 100, list: 10 },
+          timeToLive: Duration.seconds(5)
+        })
+
+        // Add entries
+        yield* cache.set({ text: "hello" }, "value1")
+        yield* cache.set({ text: "hallo" }, "value2")
+
+        // Verify both present
+        const results1 = yield* cache.getAllOption({ text: "test" })
+        assert.strictEqual(results1.length, 2)
+        assert.strictEqual(lookupCount, 0)
+
+        // Expire entries
+        yield* TestClock.adjust(Duration.seconds(6))
+
+        // getAllOption should return empty array without triggering lookup
+        const results2 = yield* cache.getAllOption({ text: "test" })
+        assert.strictEqual(results2.length, 0)
+        assert.strictEqual(lookupCount, 0)
+      }))
+  })
+
   describe("refresh", () => {
     it.effect("should force recomputation", () =>
       Effect.gen(function* () {
@@ -1202,9 +1306,11 @@ describe("FuzzyCache - TTL Expiration", () => {
       // Expire entries
       yield* TestClock.adjust(Duration.seconds(6))
 
-      // getAll should return empty array (expired entries filtered, no lookup triggered)
+      // getAll should trigger lookup when expired entries are filtered out
       const results2 = yield* cache.getAll({ text: "test" })
-      assert.strictEqual(results2.length, 0)
+      assert.strictEqual(results2.length, 1)
+      assert.strictEqual(results2[0]?.value, "result-test")
+      assert.strictEqual(results2[0]?.score, 1.0)
     }))
 
   it.effect("should not return expired entries in getOption", () =>
@@ -1912,13 +2018,13 @@ describe("FuzzyCache - Max Capacity with Expiration-Based Eviction", () => {
         yield* cache.get({ key: "c", value: "3" })
 
         // Query for exact match - should return score 1.0
-        const results = yield* cache.getAll({ key: "b", value: "2" })
+        const results = yield* cache.getAllOption({ key: "b", value: "2" })
         assert.strictEqual(results.length, 1)
         assert.strictEqual(results[0]?.score, 1.0)
         assert.strictEqual(results[0]?.value, "b:2")
 
         // Query for non-existent entry - should return empty array (no lookup triggered)
-        const noResults = yield* cache.getAll({ key: "d", value: "4" })
+        const noResults = yield* cache.getAllOption({ key: "d", value: "4" })
         assert.strictEqual(noResults.length, 0)
       }).pipe(Effect.runPromise))
 

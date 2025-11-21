@@ -3,7 +3,7 @@
  *
  * @since 1.0.0
  */
-import { ParamMatcher } from "./internal"
+import { ParamMatcher } from "./internal/fuzzycache.js"
 
 
 export const Exact = ParamMatcher.Exact

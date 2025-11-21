@@ -111,8 +111,12 @@ export interface CacheEntry<Value> {
  * @since 1.0.0
  * @category utilities
  */
-export const hasExpired = <Value>(entry: CacheEntry<Value>, now: number): boolean =>
+export const hasExpired = (now: number) => <Value>(entry: CacheEntry<Value>): boolean =>
   now >= entry.timeToLiveMillis
+
+export const hasNotExpired = (now: number) => <Value>(entry: CacheEntry<Value>): boolean =>
+  now < entry.timeToLiveMillis
+
 
 /**
  * Partition parameters into exact-match and fuzzy-match groups

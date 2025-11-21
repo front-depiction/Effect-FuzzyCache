@@ -13,6 +13,7 @@ import * as Equal from "effect/Equal"
 import * as Predicate from "effect/Predicate"
 import * as Array from "effect/Array"
 import * as Exit from "effect/Exit"
+import * as Order from "effect/Order"
 import {
   type BucketKey,
   type CacheEntry,
@@ -23,8 +24,10 @@ import {
   generateId,
   hasExpired,
   consumerCacheVariance,
-  cacheVariance
-} from "./internal.js"
+  cacheVariance,
+  hasNotExpired
+} from "./internal/fuzzycache.js"
+import { pipe } from "effect"
 
 /**
  * @since 1.0.0
@@ -120,7 +123,20 @@ export interface FuzzyCache<Params extends Record<string, unknown>, Value, Error
   set(params: Params, value: Value): Effect.Effect<void>
 
   /**
-   * Returns cache statistics (hits, misses, size)
+   * Returns cache statistics for exact bucket lookups.
+   * Tracks hits/misses at the bucket level (when buckets are found/created).
+   */
+  readonly exactStats: Effect.Effect<Cache.CacheStats>
+
+  /**
+   * Returns cache statistics for fuzzy entry matching.
+   * Tracks hits/misses at the entry level (when fuzzy matches succeed/fail).
+   */
+  readonly fuzzyStats: Effect.Effect<Cache.CacheStats>
+
+  /**
+   * Returns combined cache statistics (for backwards compatibility).
+   * Same as fuzzyStats.
    */
   readonly cacheStats: Effect.Effect<Cache.CacheStats>
 
@@ -245,7 +261,7 @@ export const make = <Params extends Record<string, unknown>, Value, Error = neve
   options: {
     readonly lookup: Lookup<Params, Value, Error, R>
     readonly config: FuzzyConfig<Params>
-    readonly capacity: number
+    readonly capacity: { readonly bucket: number; readonly list: number }
     readonly timeToLive: Duration.DurationInput
     readonly minScore?: number
   }
@@ -291,7 +307,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
   options: {
     readonly lookup: Lookup<Params, Value, Error, R>
     readonly config: FuzzyConfig<Params>
-    readonly capacity: number
+    readonly capacity: { readonly bucket: number; readonly list: number }
     readonly timeToLive: (exit: Exit.Exit<Value, Error>) => Duration.DurationInput
     readonly minScore?: number
   }
@@ -300,19 +316,30 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
     // Capture the current context to provide R when calling lookup
     const context = yield* Effect.context<R>()
 
+    // Helper: Create stats tracker using Effect's pattern
+    const createStatsTracker = () => {
+      let hits = 0
+      let misses = 0
+
+      return {
+        trackHit: () => { hits++ },
+        trackMiss: () => { misses++ },
+        get: () => ({ hits, misses })
+      }
+    }
+
     // Track our own stats for entry-level hits/misses
     // Note: We can't use bucketCache.cacheStats directly because it tracks bucket-level
     // access (when buckets are created/accessed), not entry-level access (when actual
     // fuzzy entries are hit/missed). We need entry-level granularity for correct stats.
-    let hits = 0
-    let misses = 0
+    const fuzzyStatsTracker = createStatsTracker()
 
     // Create underlying Cache for bucket storage
-    // Each bucket key maps to a Set of cache entries
-    const bucketCache = yield* Cache.make<BucketKey, Set<CacheEntry<Value>>>({
-      capacity: options.capacity,
+    // Each bucket key maps to an Array of cache entries
+    const bucketCache = yield* Cache.make<BucketKey, Array<CacheEntry<Value>>>({
+      capacity: options.capacity.bucket,
       timeToLive: Duration.infinity,  // We manage TTL per entry
-      lookup: () => Effect.succeed(new Set<CacheEntry<Value>>())
+      lookup: () => Effect.succeed([])
     })
 
 
@@ -320,28 +347,47 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
     const computeTTL = (exit: Exit.Exit<Value, Error>): number =>
       Duration.toMillis(options.timeToLive(exit))
 
+    // Helper: Add entry with capacity enforcement via eviction
+    const addEntryWithEviction = (bucket: Array<CacheEntry<Value>>, entry: CacheEntry<Value>): void => {
+      if (bucket.length >= options.capacity.list) {
+        // Find entry with earliest expiration time using Array.min
+        // Note: Array.min returns the element directly for non-empty arrays
+        const toEvict = Array.min(
+          bucket as Array.NonEmptyArray<CacheEntry<Value>>,
+          Order.mapInput(Order.number, (e: CacheEntry<Value>) => e.timeToLiveMillis)
+        )
+        const index = bucket.indexOf(toEvict)
+        if (index !== -1) {
+          bucket.splice(index, 1)
+        }
+      }
+      bucket.push(entry)
+    }
+
     // Helper: Find best matching entry in bucket
     const findBestMatch = (
-      bucket: Set<CacheEntry<Value>>,
+      bucket: Array<CacheEntry<Value>>,
       params: Params,
       now: number
     ): Option.Option<ScoredResult<Value>> => {
-      if (bucket.size === 0) return Option.none()
-
       const minScoreThreshold = options.minScore ?? 0.0
 
-      const scored = Array.fromIterable(bucket)
-        // Filter out expired entries
-        .filter((entry) => !hasExpired(entry, now))
-        // Score remaining entries
-        .map((entry) => ({
-          value: entry.value,
-          score: scoreEntry(entry, params, options.config),
-          params: entry.params
-        }))
-        // Filter by minimum score threshold
-        .filter((result) => result.score >= minScoreThreshold)
-        .sort((a, b) => b.score - a.score)
+      const scored = pipe(
+        bucket,
+        Array.filterMap((entry) =>
+          pipe(
+            entry,
+            Option.liftPredicate(hasNotExpired(now)),
+            Option.map((entry) => ({
+              value: entry.value,
+              score: scoreEntry(entry, params, options.config),
+              params: entry.params
+            }))
+          )
+        ),
+        Array.filter((result) => result.score >= minScoreThreshold),
+        Array.sortWith((entry) => entry.score, Order.number)
+      );
 
       return Option.fromIterable(scored)
     }
@@ -361,12 +407,12 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           // Try to find existing match
           const existing = findBestMatch(bucket, params, now)
           if (Option.isSome(existing)) {
-            hits++
+            fuzzyStatsTracker.trackHit()
             return existing.value.value
           }
 
           // No match found, call lookup
-          misses++
+          fuzzyStatsTracker.trackMiss()
           const value: Value = yield* Effect.provide(options.lookup(params), context)
           const entry: CacheEntry<Value> = {
             id: generateId(),
@@ -375,7 +421,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
             loadedMillis: now
           }
-          bucket.add(entry)
+          addEntryWithEviction(bucket, entry)
           return value
         }),
 
@@ -401,7 +447,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
             loadedMillis: now
           }
-          bucket.add(entry)
+          addEntryWithEviction(bucket, entry)
           return Either.right(value)
         }),
 
@@ -416,7 +462,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           }
 
           const now = yield* Clock.currentTimeMillis
-          return Option.map(findBestMatch(bucketOption.value, params, now), (scored) => scored.value)
+          const bestMatch = findBestMatch(bucketOption.value, params, now)
+          return Option.map(bestMatch, (scored) => scored.value)
         }),
 
       getOptionComplete: (params: Params) =>
@@ -430,7 +477,8 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           }
 
           const now = yield* Clock.currentTimeMillis
-          return Option.map(findBestMatch(bucketOption.value, params, now), (scored) => scored.value)
+          const bestMatch = findBestMatch(bucketOption.value, params, now)
+          return Option.map(bestMatch, (scored) => scored.value)
         }),
 
       getAll: (params: Params, threshold = 0.0): Effect.Effect<Array<ScoredResult<Value>>, Error> =>
@@ -440,12 +488,15 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
-          // Filter out expired entries first
-          const validEntries = Array.fromIterable(bucket)
-            .filter((entry) => !hasExpired(entry, now))
+          // Remove expired entries from bucket (in-place cleanup, reverse order to maintain indices)
+          for (let i = bucket.length - 1; i >= 0; i--) {
+            if (hasExpired(now)(bucket[i]!)) {
+              bucket.splice(i, 1)
+            }
+          }
 
           // If no valid entries, call lookup and store result
-          if (validEntries.length === 0) {
+          if (bucket.length === 0) {
             const value: Value = yield* Effect.provide(options.lookup(params), context)
             const entry: CacheEntry<Value> = {
               id: generateId(),
@@ -454,13 +505,13 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
               timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
               loadedMillis: now
             }
-            bucket.add(entry)
+            addEntryWithEviction(bucket, entry)
             return [{ value, score: 1.0, params }]
           }
 
           // Score and filter by the higher of per-call threshold or global minScore
           const effectiveThreshold = Math.max(threshold, options.minScore ?? 0.0)
-          const scored = validEntries
+          const scored = bucket
             .map((entry) => ({
               value: entry.value,
               score: scoreEntry(entry, params, options.config),
@@ -488,7 +539,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
             loadedMillis: now
           }
-          bucket.add(entry)
+          addEntryWithEviction(bucket, entry)
         }),
 
       set: (params: Params, value: Value) =>
@@ -499,30 +550,26 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const now = yield* Clock.currentTimeMillis
 
           // Check if an entry with identical params already exists
-          const existingEntry = Array.findFirst(
-            Array.fromIterable(bucket),
-            (entry) => {
-              // Use Effect's Equal.equals for deep equality comparison
-              return Object.keys(params).length === Object.keys(entry.params).length &&
-                Object.keys(params).every((key) =>
-                  Equal.equals(params[key], entry.params[key])
-                )
-            }
-          )
+          const existingIndex = bucket.findIndex((entry) => {
+            // Use Effect's Equal.equals for deep equality comparison
+            return (
+              Object.keys(params).length === Object.keys(entry.params).length &&
+              Object.keys(params).every((key) => Equal.equals(params[key], entry.params[key]))
+            )
+          })
 
-          if (Option.isSome(existingEntry)) {
+          if (existingIndex !== -1) {
             // Update existing entry's value and timestamp
-            bucket.delete(existingEntry.value)
-            const updatedEntry: CacheEntry<Value> = {
-              id: existingEntry.value.id,
+            const existingEntry = bucket[existingIndex]!
+            bucket[existingIndex] = {
+              id: existingEntry.id,
               params,
               value,
               timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
               loadedMillis: now
             }
-            bucket.add(updatedEntry)
           } else {
-            // Add new entry
+            // Add new entry with capacity enforcement
             const entry: CacheEntry<Value> = {
               id: generateId(),
               params,
@@ -530,16 +577,24 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
               timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
               loadedMillis: now
             }
-            bucket.add(entry)
+            addEntryWithEviction(bucket, entry)
           }
         }),
 
-      cacheStats: Effect.gen(function* () {
-        // Compute total entry count across all buckets
-        const buckets = yield* bucketCache.values
-        const totalSize = buckets.reduce((sum, bucket) => sum + bucket.size, 0)
+      exactStats: Effect.map(bucketCache.cacheStats, (stats) => stats),
 
-        // Return proper CacheStats structure using Effect's helper
+      fuzzyStats: Effect.gen(function* () {
+        const buckets = yield* bucketCache.values
+        const totalSize = buckets.reduce((sum, bucket) => sum + bucket.length, 0)
+        const { hits, misses } = fuzzyStatsTracker.get()
+        return Cache.makeCacheStats({ hits, misses, size: totalSize })
+      }),
+
+      cacheStats: Effect.gen(function* () {
+        // For backwards compatibility, return fuzzy stats
+        const buckets = yield* bucketCache.values
+        const totalSize = buckets.reduce((sum, bucket) => sum + bucket.length, 0)
+        const { hits, misses } = fuzzyStatsTracker.get()
         return Cache.makeCacheStats({ hits, misses, size: totalSize })
       }),
 
@@ -553,7 +608,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             return false
           }
 
-          return bucketOption.value.size > 0
+          return bucketOption.value.length > 0
         }),
 
       entryStats: (params: Params) =>
@@ -573,10 +628,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           }
 
           // Find the actual entry to get timestamp
-          const entry = Array.findFirst(
-            Array.fromIterable(bucketOption.value),
-            (e) => e.value === bestMatch.value.value
-          )
+          const entry = Array.findFirst(bucketOption.value, (e) => e.value === bestMatch.value.value)
 
           if (Option.isNone(entry)) {
             return Option.none()
@@ -600,14 +652,10 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const bestMatch = findBestMatch(bucket, params, now)
 
           if (Option.isSome(bestMatch)) {
-            // Remove the best matching entry
-            const entryToRemove = Array.findFirst(
-              Array.fromIterable(bucket),
-              (entry) => entry.value === bestMatch.value.value
-            )
-
-            if (Option.isSome(entryToRemove)) {
-              bucket.delete(entryToRemove.value)
+            // Find and remove the best matching entry
+            const index = bucket.findIndex((entry) => entry.value === bestMatch.value.value)
+            if (index !== -1) {
+              bucket.splice(index, 1)
             }
           }
         }),
@@ -627,14 +675,10 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
           const bestMatch = findBestMatch(bucket, params, now)
 
           if (Option.isSome(bestMatch) && predicate(bestMatch.value.value)) {
-            // Remove the best matching entry if predicate holds
-            const entryToRemove = Array.findFirst(
-              Array.fromIterable(bucket),
-              (entry) => entry.value === bestMatch.value.value
-            )
-
-            if (Option.isSome(entryToRemove)) {
-              bucket.delete(entryToRemove.value)
+            // Find and remove the best matching entry
+            const index = bucket.findIndex((entry) => entry.value === bestMatch.value.value)
+            if (index !== -1) {
+              bucket.splice(index, 1)
             }
           }
         }),
@@ -643,27 +687,27 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
 
       size: Effect.gen(function* () {
         const buckets = yield* bucketCache.values
-        return buckets.reduce((sum, bucket) => sum + bucket.size, 0)
+        return buckets.reduce((sum, bucket) => sum + bucket.length, 0)
       }),
 
       keys: Effect.gen(function* () {
-        const buckets = yield* bucketCache.entries
-        return Array.flatMap(buckets, ([_, bucket]) =>
-          Array.map(Array.fromIterable(bucket), (entry) => entry.params as Params)
+        const buckets = yield* bucketCache.values
+        return Array.flatMap(buckets, (bucket) =>
+          Array.map(bucket, (entry) => entry.params as Params)
         )
       }),
 
       values: Effect.gen(function* () {
         const buckets = yield* bucketCache.values
         return Array.flatMap(buckets, (bucket) =>
-          Array.map(Array.fromIterable(bucket), (entry) => entry.value)
+          Array.map(bucket, (entry) => entry.value)
         )
       }),
 
       entries: Effect.gen(function* () {
         const buckets = yield* bucketCache.values
         return Array.flatMap(buckets, (bucket) =>
-          Array.map(Array.fromIterable(bucket), (entry) => [entry.params as Params, entry.value] as [Params, Value])
+          Array.map(bucket, (entry) => [entry.params as Params, entry.value] as [Params, Value])
         )
       })
     }

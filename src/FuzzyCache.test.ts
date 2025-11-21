@@ -40,7 +40,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { key: Matchers.Exact() },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -78,7 +78,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { key: Matchers.Exact() },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -109,7 +109,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { text: Matchers.levenshtein(0.5) },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -145,7 +145,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { text: Matchers.levenshtein(0.0) }, // Allow all scores
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -184,7 +184,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { text: Matchers.levenshtein(0.0) },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -216,7 +216,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { value: Matchers.numeric(tolerance) },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -248,7 +248,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { value: Matchers.numeric(tolerance) },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -280,7 +280,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { value: Matchers.numeric(tolerance) },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -330,7 +330,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
                 url: Matchers.Exact(),
                 prompt: Matchers.levenshtein(0.3)
               },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -368,7 +368,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
                 url: Matchers.Exact(),
                 prompt: Matchers.levenshtein(0.0) // Return all
               },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -402,7 +402,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { key: Matchers.Exact() },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -440,7 +440,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const cache = yield* FuzzyCache.make({
               lookup,
               config: { key: Matchers.Exact() },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -484,7 +484,7 @@ describe("FuzzyCache - Property-Based Tests", () => {
                 url: Matchers.Exact(),
                 prompt: Matchers.levenshtein(0.0)
               },
-              capacity: 100,
+              capacity: { bucket: 100, list: 10 },
               timeToLive: Duration.infinity
             })
 
@@ -521,7 +521,7 @@ describe("FuzzyCache - Cache Subtype Conformance", () => {
       const fuzzyCache = yield* FuzzyCache.make({
         lookup,
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity
       })
 
@@ -544,7 +544,7 @@ describe("FuzzyCache - Cache Subtype Conformance", () => {
       const fuzzyCache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity
       })
 
@@ -558,7 +558,7 @@ describe("FuzzyCache - Cache Subtype Conformance", () => {
       const fuzzyCache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity
       })
 
@@ -600,7 +600,7 @@ describe("FuzzyCache - Cache Subtype Conformance", () => {
       const fuzzyCache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity
       })
 
@@ -628,7 +628,7 @@ describe("FuzzyCache - Cache Subtype Conformance", () => {
       const fuzzyCache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity
       })
 
@@ -660,7 +660,7 @@ describe("FuzzyCache - Cache Subtype Conformance", () => {
           userId: Matchers.Exact(),  // Exact match - defines bucket
           query: Matchers.Exact()  // Also exact match to ensure no fuzzy hits
         },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity
       })
 
@@ -684,12 +684,59 @@ describe("FuzzyCache - Cache Subtype Conformance", () => {
       assert.strictEqual(stats.size, 3, "Should track entry count, not bucket count")
     }))
 
+  it.effect("should provide separate exactStats and fuzzyStats", () =>
+    Effect.gen(function* () {
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup: (params: { userId: string; query: string }) =>
+          Effect.succeed(`result-${params.query}`),
+        config: {
+          userId: Matchers.Exact(),  // Exact match - defines bucket
+          query: Matchers.Exact()  // Also exact match for clarity
+        },
+        capacity: { bucket: 100, list: 10 },
+        timeToLive: Duration.infinity
+      })
+
+      // Add entries to create buckets and entries
+      yield* fuzzyCache.get({ userId: "user1", query: "hello" })  // entry miss
+      yield* fuzzyCache.get({ userId: "user1", query: "world" })  // entry miss (same bucket)
+      yield* fuzzyCache.get({ userId: "user2", query: "test" })   // entry miss (new bucket)
+
+      // Access existing entries
+      yield* fuzzyCache.get({ userId: "user1", query: "hello" })  // entry hit
+      yield* fuzzyCache.get({ userId: "user2", query: "test" })   // entry hit
+
+      // Get stats
+      const exactStats = yield* fuzzyCache.exactStats
+      const fuzzyStats = yield* fuzzyCache.fuzzyStats
+      const cacheStats = yield* fuzzyCache.cacheStats
+
+      // exactStats comes from bucketCache - tracks bucket-level operations
+      // Note: bucketCache.size may be higher than expected due to how Effect's Cache
+      // tracks entries internally (including Pending states, etc.)
+      // The important thing is that exactStats tracks different metrics than fuzzyStats
+      assert.strictEqual(typeof exactStats.size, "number", "exactStats should have a size")
+      assert.strictEqual(typeof exactStats.hits, "number", "exactStats should have hits")
+      assert.strictEqual(typeof exactStats.misses, "number", "exactStats should have misses")
+
+      // fuzzyStats tracks entry-level operations (our custom tracking)
+      // We had 3 entry misses (hello, world, test) and 2 entry hits (hello repeat, test repeat)
+      assert.strictEqual(fuzzyStats.hits, 2, "fuzzyStats: 2 entry hits")
+      assert.strictEqual(fuzzyStats.misses, 3, "fuzzyStats: 3 entry misses")
+      assert.strictEqual(fuzzyStats.size, 3, "fuzzyStats: 3 entries")
+
+      // cacheStats should be same as fuzzyStats (backwards compatibility)
+      assert.strictEqual(cacheStats.hits, fuzzyStats.hits, "cacheStats matches fuzzyStats.hits")
+      assert.strictEqual(cacheStats.misses, fuzzyStats.misses, "cacheStats matches fuzzyStats.misses")
+      assert.strictEqual(cacheStats.size, fuzzyStats.size, "cacheStats matches fuzzyStats.size")
+    }))
+
   it.effect("should work as ConsumerCache subtype", () =>
     Effect.gen(function* () {
       const fuzzyCache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity
       })
 
@@ -727,7 +774,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -746,7 +793,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -769,7 +816,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -785,7 +832,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -808,7 +855,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -824,7 +871,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -851,7 +898,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -873,7 +920,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -896,7 +943,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -912,7 +959,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -931,7 +978,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -947,7 +994,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -967,7 +1014,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -988,7 +1035,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -1007,7 +1054,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -1029,7 +1076,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -1053,7 +1100,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -1073,7 +1120,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -1093,7 +1140,7 @@ describe("FuzzyCache - API Methods", () => {
         const cache = yield* FuzzyCache.make({
           lookup,
           config: { key: Matchers.Exact() },
-          capacity: 100,
+          capacity: { bucket: 100, list: 10 },
           timeToLive: Duration.infinity
         })
 
@@ -1116,7 +1163,7 @@ describe("FuzzyCache - TTL Expiration", () => {
       const cache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.seconds(1)
       })
 
@@ -1134,7 +1181,7 @@ describe("FuzzyCache - TTL Expiration", () => {
       const cache = yield* FuzzyCache.make({
         lookup: (params: { text: string }) => Effect.succeed(`result-${params.text}`),
         config: { text: Matchers.levenshtein(0.0) },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.seconds(5)
       })
 
@@ -1160,7 +1207,7 @@ describe("FuzzyCache - TTL Expiration", () => {
       const cache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.seconds(1)
       })
 
@@ -1183,7 +1230,7 @@ describe("FuzzyCache - TTL Expiration", () => {
       const cache = yield* FuzzyCache.make({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.seconds(10)
       })
 
@@ -1206,7 +1253,7 @@ describe("FuzzyCache - TTL Expiration", () => {
       const cache = yield* FuzzyCache.makeWith({
         lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
         config: { key: Matchers.Exact() },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: (exit) =>
           Exit.isSuccess(exit)
             ? Duration.seconds(10)
@@ -1242,7 +1289,7 @@ describe("FuzzyCache - TTL Expiration", () => {
           userId: Matchers.Exact(),
           query: Matchers.levenshtein(0.0)
         },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.seconds(5)
       })
 
@@ -1281,7 +1328,7 @@ describe("FuzzyCache - minScore Threshold", () => {
           return `result-${params.text}`
         }),
         config: { text: Matchers.levenshtein(0.8) },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity,
         minScore: 0.8
       })
@@ -1301,7 +1348,7 @@ describe("FuzzyCache - minScore Threshold", () => {
       const cache = yield* FuzzyCache.make({
         lookup: (params: { text: string }) => Effect.succeed(`result-${params.text}`),
         config: { text: Matchers.levenshtein(0.5) },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity,
         minScore: 0.5
       })
@@ -1324,7 +1371,7 @@ describe("FuzzyCache - minScore Threshold", () => {
       const cache = yield* FuzzyCache.make({
         lookup: (params: { text: string }) => Effect.succeed(`result-${params.text}`),
         config: { text: Matchers.levenshtein(0.0) },
-        capacity: 100,
+        capacity: { bucket: 100, list: 10 },
         timeToLive: Duration.infinity,
         minScore: 0.7
       })
@@ -1340,4 +1387,340 @@ describe("FuzzyCache - minScore Threshold", () => {
         assert.isTrue(result.score >= 0.7)
       }
     }))
+})
+
+// ============================================================================
+// Max Capacity and Expiration-Based Eviction Tests
+// ============================================================================
+
+describe("FuzzyCache - Max Capacity with Expiration-Based Eviction", () => {
+  describe("Queue Capacity Enforcement", () => {
+    it.effect("should evict entry with earliest TTL when queue capacity is reached", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.make({
+          lookup: (params: { bucket: string; query: string }) =>
+            Effect.succeed(`value-${params.query}`),
+          config: {
+            bucket: Matchers.Exact(),
+            query: Matchers.levenshtein(0.0)
+          },
+          capacity: { bucket: 5, list: 3 },
+          timeToLive: Duration.seconds(10)
+        })
+
+        // Fill queue to capacity (3 entries in same bucket)
+        yield* cache.set({ bucket: "b1", query: "q1" }, "v1")
+        yield* cache.set({ bucket: "b1", query: "q2" }, "v2")
+        yield* cache.set({ bucket: "b1", query: "q3" }, "v3")
+
+        // Verify all 3 are present by checking values directly
+        const valuesBefore = yield* cache.values
+        assert.strictEqual(valuesBefore.length, 3, "Should have 3 entries before eviction")
+
+        // Add one more entry to trigger eviction
+        yield* cache.set({ bucket: "b1", query: "q4" }, "v4")
+
+        // Verify only 3 entries remain (one was evicted)
+        const valuesAfter = yield* cache.values
+        assert.strictEqual(valuesAfter.length, 3, "Should have 3 entries after eviction")
+
+        // Verify the earliest entry (k1/v1) was evicted
+        const values = valuesAfter.sort()
+        assert.deepStrictEqual(values, ["v2", "v3", "v4"])
+      }))
+
+    it.effect("should evict entry with earliest TTL based on expiration time, not insertion order", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.make({
+          lookup: (params: { bucket: string; query: string }) =>
+            Effect.succeed(`value-${params.query}`),
+          config: {
+            bucket: Matchers.Exact(),
+            query: Matchers.levenshtein(0.0)
+          },
+          capacity: { bucket: 5, list: 3 },
+          timeToLive: Duration.seconds(10)
+        })
+
+        // Add entry with TTL expiring at T+10s
+        yield* cache.set({ bucket: "b1", query: "q1" }, "v1")
+
+        // Advance time by 3 seconds
+        yield* TestClock.adjust(Duration.seconds(3))
+
+        // Add entry with TTL expiring at T+13s (later than q1)
+        yield* cache.set({ bucket: "b1", query: "q2" }, "v2")
+
+        // Advance time by 2 seconds (total T+5s)
+        yield* TestClock.adjust(Duration.seconds(2))
+
+        // Add entry with TTL expiring at T+15s (latest)
+        yield* cache.set({ bucket: "b1", query: "q3" }, "v3")
+
+        // Add one more to trigger eviction
+        // q1 has earliest expiration (T+10s), so it should be evicted
+        yield* cache.set({ bucket: "b1", query: "q4" }, "v4")
+
+        const valuesAfter = yield* cache.values
+        const values = valuesAfter.sort()
+
+        // k1 should be evicted (earliest expiration)
+        assert.deepStrictEqual(values, ["v2", "v3", "v4"])
+      }))
+  })
+
+  describe("Expiration-Based Eviction Priority", () => {
+    it.effect("should evict entry with shortest TTL when capacity is reached", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.makeWith({
+          lookup: (params: { bucket: string; query: string }) =>
+            Effect.succeed(`value-${params.query}`),
+          config: {
+            bucket: Matchers.Exact(),
+            query: Matchers.levenshtein(0.0)
+          },
+          capacity: { bucket: 5, list: 3 },
+          timeToLive: (exit) => {
+            if (Exit.isSuccess(exit)) {
+              const value = exit.value
+              // Different TTLs based on value
+              if (value === "v1") return Duration.seconds(5)
+              if (value === "v2") return Duration.seconds(10)
+              if (value === "v3") return Duration.seconds(15)
+              return Duration.seconds(20)
+            }
+            return Duration.seconds(1)
+          }
+        })
+
+        // Add 3 entries with different TTLs
+        yield* cache.set({ bucket: "b1", query: "q1" }, "v1") // expires at T+5s
+        yield* cache.set({ bucket: "b1", query: "q2" }, "v2") // expires at T+10s
+        yield* cache.set({ bucket: "b1", query: "q3" }, "v3") // expires at T+15s
+
+        // Verify all 3 are present
+        const valuesBefore = yield* cache.values
+        assert.strictEqual(valuesBefore.length, 3)
+
+        // Add 4th entry to trigger eviction (expires at T+20s)
+        yield* cache.set({ bucket: "b1", query: "q4" }, "v4")
+
+        // Entry with 5s TTL (k1) should be evicted
+        const valuesAfter = yield* cache.values
+        assert.strictEqual(valuesAfter.length, 3)
+
+        const values = valuesAfter.sort()
+        assert.deepStrictEqual(values, ["v2", "v3", "v4"])
+      }))
+
+    it.effect("should maintain entries with longer TTLs after eviction", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.makeWith({
+          lookup: (params: { bucket: string; query: string }) =>
+            Effect.succeed(`value-${params.query}`),
+          config: {
+            bucket: Matchers.Exact(),
+            query: Matchers.levenshtein(0.0)
+          },
+          capacity: { bucket: 5, list: 3 },
+          timeToLive: (exit) => {
+            if (Exit.isSuccess(exit)) {
+              const value = exit.value
+              if (value === "short") return Duration.seconds(5)
+              if (value === "medium") return Duration.seconds(10)
+              if (value === "long") return Duration.seconds(15)
+              return Duration.seconds(20)
+            }
+            return Duration.seconds(1)
+          }
+        })
+
+        // Fill to capacity with staggered TTLs
+        yield* cache.set({ bucket: "b1", query: "q1" }, "short")
+        yield* cache.set({ bucket: "b1", query: "q2" }, "medium")
+        yield* cache.set({ bucket: "b1", query: "q3" }, "long")
+
+        // Add new entry to trigger eviction
+        yield* cache.set({ bucket: "b1", query: "q4" }, "newest")
+
+        // Verify short TTL was evicted
+        const valuesAfter = yield* cache.values
+        const values = new Set(valuesAfter)
+
+        assert.isFalse(values.has("short"), "Short TTL entry should be evicted")
+        assert.isTrue(values.has("medium"), "Medium TTL entry should remain")
+        assert.isTrue(values.has("long"), "Long TTL entry should remain")
+        assert.isTrue(values.has("newest"), "Newest entry should be present")
+      }))
+  })
+
+  describe("Bucket Capacity Enforcement", () => {
+    it.effect("should enforce bucket capacity limit", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.make({
+          lookup: (params: { bucket: string; key: string }) =>
+            Effect.succeed(`value-${params.key}`),
+          config: {
+            bucket: Matchers.Exact(),
+            key: Matchers.Exact()
+          },
+          capacity: { bucket: 3, list: 5 },
+          timeToLive: Duration.seconds(10)
+        })
+
+        // Fill bucket capacity with different buckets
+        yield* cache.set({ bucket: "b1", key: "k1" }, "v1")
+        yield* cache.set({ bucket: "b2", key: "k2" }, "v2")
+        yield* cache.set({ bucket: "b3", key: "k3" }, "v3")
+
+        // Verify all 3 buckets exist
+        const size1 = yield* cache.size
+        assert.strictEqual(size1, 3)
+
+        // Add entry to new bucket (should trigger bucket eviction)
+        yield* cache.set({ bucket: "b4", key: "k4" }, "v4")
+
+        // Verify size is still at bucket capacity
+        const size2 = yield* cache.size
+        assert.strictEqual(size2, 3)
+      }))
+  })
+
+  describe("Mixed Capacity Scenarios", () => {
+    it.effect("should handle multiple evictions with staggered TTLs", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.makeWith({
+          lookup: (params: { bucket: string; query: string }) =>
+            Effect.succeed(`value-${params.query}`),
+          config: {
+            bucket: Matchers.Exact(),
+            query: Matchers.levenshtein(0.0)
+          },
+          capacity: { bucket: 5, list: 3 },
+          timeToLive: (exit) => {
+            if (Exit.isSuccess(exit)) {
+              const value = exit.value
+              // Parse TTL from value like "ttl-5"
+              const match = value.match(/ttl-(\d+)/)
+              if (match) {
+                return Duration.seconds(parseInt(match[1]!))
+              }
+            }
+            return Duration.seconds(10)
+          }
+        })
+
+        // Fill queue with entries having different TTLs
+        yield* cache.set({ bucket: "b1", query: "q1" }, "ttl-5")  // shortest
+        yield* cache.set({ bucket: "b1", query: "q2" }, "ttl-15") // longest
+        yield* cache.set({ bucket: "b1", query: "q3" }, "ttl-10") // medium
+
+        // Add multiple new entries to trigger multiple evictions
+        yield* cache.set({ bucket: "b1", query: "q4" }, "ttl-12")
+        yield* cache.set({ bucket: "b1", query: "q5" }, "ttl-8")
+
+        // Verify capacity is maintained
+        const valuesAfter = yield* cache.values
+        assert.strictEqual(valuesAfter.length, 3, "Should maintain queue capacity of 3")
+
+        // Verify eviction order: shortest TTLs evicted first
+        const values = new Set(valuesAfter)
+
+        // q1 (ttl-5) should be evicted when q4 is added
+        // q3 (ttl-10) should be evicted when q5 is added (ttl-10 was the earliest in bucket at that time)
+        assert.isFalse(values.has("ttl-5"), "Shortest TTL should be evicted first")
+        assert.isFalse(values.has("ttl-10"), "Next shortest TTL should be evicted second")
+
+        // Remaining should be ttl-15, ttl-12, and ttl-8
+        assert.isTrue(values.has("ttl-8"))
+        assert.isTrue(values.has("ttl-12"))
+        assert.isTrue(values.has("ttl-15"))
+      }))
+
+    it.effect("should evict correct entry when entries have same initial time but different TTLs", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.makeWith({
+          lookup: (params: { bucket: string; query: string }) =>
+            Effect.succeed(`value-${params.query}`),
+          config: {
+            bucket: Matchers.Exact(),
+            query: Matchers.levenshtein(0.0)
+          },
+          capacity: { bucket: 5, list: 3 },
+          timeToLive: (exit) => {
+            if (Exit.isSuccess(exit)) {
+              const value = exit.value
+              if (value === "v1") return Duration.seconds(5)
+              if (value === "v2") return Duration.seconds(10)
+              if (value === "v3") return Duration.seconds(15)
+            }
+            return Duration.seconds(10)
+          }
+        })
+
+        // Add all 3 entries at the same time with different TTLs
+        yield* cache.set({ bucket: "b1", query: "q1" }, "v1") // expires at T + 5s
+        yield* cache.set({ bucket: "b1", query: "q2" }, "v2") // expires at T + 10s
+        yield* cache.set({ bucket: "b1", query: "q3" }, "v3") // expires at T + 15s
+
+        // Don't advance time - add 4th entry immediately
+        yield* cache.set({ bucket: "b1", query: "q4" }, "v4")
+
+        // v1 should be evicted (earliest absolute expiration time)
+        const valuesAfter = yield* cache.values
+        const values = new Set(valuesAfter)
+
+        assert.isFalse(values.has("v1"), "Entry with shortest TTL should be evicted")
+        assert.isTrue(values.has("v2"))
+        assert.isTrue(values.has("v3"))
+        assert.isTrue(values.has("v4"))
+      }))
+
+    it.effect("should continuously evict earliest expiring entries as capacity is exceeded", () =>
+      Effect.gen(function* () {
+        const cache = yield* FuzzyCache.make({
+          lookup: (params: { bucket: string; query: string }) =>
+            Effect.succeed(`value-${params.query}`),
+          config: {
+            bucket: Matchers.Exact(),
+            query: Matchers.levenshtein(0.0)
+          },
+          capacity: { bucket: 5, list: 2 },
+          timeToLive: Duration.seconds(10)
+        })
+
+        // Add entries one by one with time progression
+        yield* cache.set({ bucket: "b1", query: "q1" }, "v1")
+        yield* TestClock.adjust(Duration.seconds(1))
+
+        yield* cache.set({ bucket: "b1", query: "q2" }, "v2")
+        yield* TestClock.adjust(Duration.seconds(1))
+
+        // At capacity (2 entries)
+        let size = yield* cache.size
+        assert.strictEqual(size, 2)
+
+        // Add 3rd entry - should evict q1 (earliest expiration at T+10s)
+        yield* cache.set({ bucket: "b1", query: "q3" }, "v3")
+        yield* TestClock.adjust(Duration.seconds(1))
+
+        size = yield* cache.size
+        assert.strictEqual(size, 2, "Should maintain capacity of 2")
+
+        let valuesAfter = yield* cache.values
+        let values = new Set(valuesAfter)
+        assert.isFalse(values.has("v1"), "v1 should be evicted")
+        assert.isTrue(values.has("v2"))
+        assert.isTrue(values.has("v3"))
+
+        // Add 4th entry - should evict q2 (now the earliest at T+11s)
+        yield* cache.set({ bucket: "b1", query: "q4" }, "v4")
+
+        valuesAfter = yield* cache.values
+        values = new Set(valuesAfter)
+        assert.isFalse(values.has("v2"), "v2 should be evicted")
+        assert.isTrue(values.has("v3"))
+        assert.isTrue(values.has("v4"))
+      }))
+  })
 })

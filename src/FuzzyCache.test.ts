@@ -1793,14 +1793,17 @@ describe("FuzzyCache - Max Capacity with Expiration-Based Eviction", () => {
         const optionExit = yield* getOptionFiber.await
 
         assert.isTrue(Exit.isSuccess(valueExit))
-        const value = valueExit.value
         assert.isTrue(Exit.isSuccess(optionExit))
-        const option = optionExit.value
 
-        assert.strictEqual(value, "value-test")
-        assert.isTrue(Option.isSome(option))
-        if (Option.isSome(option)) {
-          assert.strictEqual(option.value, "value-test")
+        if (Exit.isSuccess(valueExit) && Exit.isSuccess(optionExit)) {
+          const value = valueExit.value
+          const option = optionExit.value
+
+          assert.strictEqual(value, "value-test")
+          assert.isTrue(Option.isSome(option))
+          if (Option.isSome(option)) {
+            assert.strictEqual(option.value, "value-test")
+          }
         }
       }))
 

@@ -461,7 +461,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
                   return exit.value
                 } else {
                   // Re-throw the error
-                  return yield* Effect.fail(exit.cause)
+                  return yield* Effect.failCause(exit.cause)
                 }
               })
             )
@@ -522,7 +522,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
                   return exit.value
                 } else {
                   // Re-throw the error
-                  return yield* Effect.fail(exit.cause)
+                  return yield* Effect.failCause(exit.cause)
                 }
               })
             )

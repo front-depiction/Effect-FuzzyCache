@@ -301,6 +301,9 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
     const context = yield* Effect.context<R>()
 
     // Track our own stats for entry-level hits/misses
+    // Note: We can't use bucketCache.cacheStats directly because it tracks bucket-level
+    // access (when buckets are created/accessed), not entry-level access (when actual
+    // fuzzy entries are hit/missed). We need entry-level granularity for correct stats.
     let hits = 0
     let misses = 0
 
@@ -532,11 +535,12 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
         }),
 
       cacheStats: Effect.gen(function* () {
-        const bucketSize = yield* Effect.gen(function* () {
-          const buckets = yield* bucketCache.values
-          return buckets.reduce((sum, bucket) => sum + bucket.size, 0)
-        })
-        return Cache.makeCacheStats({ hits, misses, size: bucketSize })
+        // Compute total entry count across all buckets
+        const buckets = yield* bucketCache.values
+        const totalSize = buckets.reduce((sum, bucket) => sum + bucket.size, 0)
+
+        // Return proper CacheStats structure using Effect's helper
+        return Cache.makeCacheStats({ hits, misses, size: totalSize })
       }),
 
       contains: (params: Params) =>

@@ -509,6 +509,211 @@ describe("FuzzyCache - Property-Based Tests", () => {
 })
 
 // ============================================================================
+// Cache Subtype Verification Tests
+// ============================================================================
+
+describe("FuzzyCache - Cache Subtype Conformance", () => {
+  it.effect("should be assignable to Cache type", () =>
+    Effect.gen(function* () {
+      const lookup = (params: { key: string }) =>
+        Effect.succeed(`value-${params.key}`)
+
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup,
+        config: { key: Matchers.Exact() },
+        capacity: 100,
+        timeToLive: Duration.infinity
+      })
+
+      // Type test: Should be assignable to Cache interface
+      const asCache: import("effect/Cache").Cache<{ key: string }, string, never> = fuzzyCache
+
+      // Verify it works as a Cache
+      const value = yield* asCache.get({ key: "test" })
+      assert.strictEqual(value, "value-test")
+    }))
+
+  it.effect("should work with functions expecting Cache interface", () =>
+    Effect.gen(function* () {
+      // Helper function that accepts any Cache
+      const getCached = <K, V, E>(
+        cache: import("effect/Cache").Cache<K, V, E>,
+        key: K
+      ): Effect.Effect<V, E> => cache.get(key)
+
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
+        config: { key: Matchers.Exact() },
+        capacity: 100,
+        timeToLive: Duration.infinity
+      })
+
+      // Should work seamlessly with generic cache functions
+      const value = yield* getCached(fuzzyCache, { key: "test" })
+      assert.strictEqual(value, "value-test")
+    }))
+
+  it.effect("should implement all Cache methods correctly", () =>
+    Effect.gen(function* () {
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
+        config: { key: Matchers.Exact() },
+        capacity: 100,
+        timeToLive: Duration.infinity
+      })
+
+      // Test get
+      const value1 = yield* fuzzyCache.get({ key: "a" })
+      assert.strictEqual(value1, "value-a")
+
+      // Test getEither
+      const either1 = yield* fuzzyCache.getEither({ key: "a" })
+      assert.isTrue(Either.isLeft(either1))
+
+      const either2 = yield* fuzzyCache.getEither({ key: "b" })
+      assert.isTrue(Either.isRight(either2))
+
+      // Test getOption
+      const option1 = yield* fuzzyCache.getOption({ key: "a" })
+      assert.isTrue(Option.isSome(option1))
+
+      const option2 = yield* fuzzyCache.getOption({ key: "c" })
+      assert.isTrue(Option.isNone(option2))
+
+      // Test getOptionComplete
+      const optionComplete = yield* fuzzyCache.getOptionComplete({ key: "a" })
+      assert.isTrue(Option.isSome(optionComplete))
+
+      // Test refresh
+      yield* fuzzyCache.refresh({ key: "a" })
+      const value2 = yield* fuzzyCache.get({ key: "a" })
+      assert.strictEqual(value2, "value-a")
+
+      // Test set
+      yield* fuzzyCache.set({ key: "d" }, "custom-value")
+      const value3 = yield* fuzzyCache.get({ key: "d" })
+      assert.strictEqual(value3, "custom-value")
+    }))
+
+  it.effect("should return proper CacheStats structure", () =>
+    Effect.gen(function* () {
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
+        config: { key: Matchers.Exact() },
+        capacity: 100,
+        timeToLive: Duration.infinity
+      })
+
+      // Trigger some cache operations
+      yield* fuzzyCache.get({ key: "a" })  // miss
+      yield* fuzzyCache.get({ key: "a" })  // hit
+      yield* fuzzyCache.get({ key: "b" })  // miss
+      yield* fuzzyCache.set({ key: "c" }, "value-c")
+
+      const stats = yield* fuzzyCache.cacheStats
+
+      // Verify CacheStats structure
+      assert.strictEqual(typeof stats.hits, "number")
+      assert.strictEqual(typeof stats.misses, "number")
+      assert.strictEqual(typeof stats.size, "number")
+
+      // Verify actual values
+      assert.strictEqual(stats.hits, 1, "Should have 1 hit")
+      assert.strictEqual(stats.misses, 2, "Should have 2 misses")
+      assert.strictEqual(stats.size, 3, "Should have 3 entries")
+    }))
+
+  it.effect("should return proper EntryStats structure", () =>
+    Effect.gen(function* () {
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
+        config: { key: Matchers.Exact() },
+        capacity: 100,
+        timeToLive: Duration.infinity
+      })
+
+      const beforeTime = yield* Clock.currentTimeMillis
+      yield* fuzzyCache.get({ key: "test" })
+      const afterTime = yield* Clock.currentTimeMillis
+
+      const entryStatsOption = yield* fuzzyCache.entryStats({ key: "test" })
+
+      assert.isTrue(Option.isSome(entryStatsOption))
+      if (Option.isSome(entryStatsOption)) {
+        const entryStats = entryStatsOption.value
+
+        // Verify EntryStats structure
+        assert.strictEqual(typeof entryStats.loadedMillis, "number")
+
+        // Verify loadedMillis is within expected range
+        assert.isTrue(entryStats.loadedMillis >= beforeTime)
+        assert.isTrue(entryStats.loadedMillis <= afterTime)
+      }
+    }))
+
+  it.effect("should track entry-level stats, not bucket-level stats", () =>
+    Effect.gen(function* () {
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup: (params: { userId: string; query: string }) =>
+          Effect.succeed(`result-${params.query}`),
+        config: {
+          userId: Matchers.Exact(),  // Exact match - defines bucket
+          query: Matchers.Exact()  // Also exact match to ensure no fuzzy hits
+        },
+        capacity: 100,
+        timeToLive: Duration.infinity
+      })
+
+      // Add multiple entries to the SAME bucket (same userId, different queries)
+      yield* fuzzyCache.get({ userId: "user1", query: "hello" })  // miss, creates bucket
+      yield* fuzzyCache.get({ userId: "user1", query: "world" })  // miss, same bucket
+      yield* fuzzyCache.get({ userId: "user1", query: "test" })   // miss, same bucket
+
+      // Access existing entries (hits)
+      yield* fuzzyCache.get({ userId: "user1", query: "hello" })  // hit
+      yield* fuzzyCache.get({ userId: "user1", query: "world" })  // hit
+
+      const stats = yield* fuzzyCache.cacheStats
+
+      // Stats should reflect entry-level operations, not bucket operations
+      // We have: 3 misses (3 different entries), 2 hits (2 repeat accesses), 3 entries total
+      // The key insight: even though all entries are in the same bucket (same userId),
+      // we track stats at the entry level (based on exact query matches)
+      assert.strictEqual(stats.misses, 3, "Should track entry-level misses")
+      assert.strictEqual(stats.hits, 2, "Should track entry-level hits")
+      assert.strictEqual(stats.size, 3, "Should track entry count, not bucket count")
+    }))
+
+  it.effect("should work as ConsumerCache subtype", () =>
+    Effect.gen(function* () {
+      const fuzzyCache = yield* FuzzyCache.make({
+        lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
+        config: { key: Matchers.Exact() },
+        capacity: 100,
+        timeToLive: Duration.infinity
+      })
+
+      // Type test: Should be assignable to ConsumerCache
+      const asConsumerCache: import("effect/Cache").ConsumerCache<{ key: string }, string, never> = fuzzyCache
+
+      // First populate the cache via the full cache interface
+      yield* fuzzyCache.set({ key: "test" }, "test-value")
+
+      // Verify ConsumerCache read-only methods work
+      const option = yield* asConsumerCache.getOption({ key: "test" })
+      assert.isTrue(Option.isSome(option))
+
+      const hasKey = yield* asConsumerCache.contains({ key: "test" })
+      assert.isTrue(hasKey)
+
+      // ConsumerCache can invalidate
+      yield* asConsumerCache.invalidate({ key: "test" })
+      const optionAfter = yield* asConsumerCache.getOption({ key: "test" })
+      assert.isTrue(Option.isNone(optionAfter))
+    }))
+})
+
+// ============================================================================
 // API Method Tests
 // ============================================================================
 
@@ -637,7 +842,7 @@ describe("FuzzyCache - API Methods", () => {
     it.effect("should force recomputation", () =>
       Effect.gen(function* () {
         let counter = 0
-        const lookup = (params: { key: string }) =>
+        const lookup = (_params: { key: string }) =>
           Effect.sync(() => {
             counter++
             return `value-${counter}`

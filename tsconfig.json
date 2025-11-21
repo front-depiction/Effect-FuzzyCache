@@ -25,9 +25,7 @@
     "downlevelIteration": true
   },
   "include": [
-    "examples/**/*.ts",
-    "src/**/*.ts",
-    "test/**/*.ts"
+    "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",

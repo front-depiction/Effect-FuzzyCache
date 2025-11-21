@@ -261,8 +261,8 @@ describe("FuzzyCache - Property-Based Tests", () => {
             const queryValue = baseValue + (tolerance * 2)
             const results = yield* cache.getAll({ value: queryValue })
 
-            // Should have score 0 at 2x tolerance
-            assert.strictEqual(results[0]?.score, 0.0)
+            // Should return no results at 2x tolerance (filtered out by Option.none)
+            assert.strictEqual(results.length, 0)
           }).pipe(Effect.runPromise)
         }),
         { numRuns: 500 }
@@ -368,10 +368,11 @@ describe("FuzzyCache - Property-Based Tests", () => {
               lookup,
               config: {
                 url: Matchers.Exact(),
-                prompt: Matchers.levenshtein(0.0) // Return all
+                prompt: Matchers.levenshtein(1.0) // Return all (accept up to 100% difference)
               },
               capacity: { bucket: 100, list: 10 },
-              timeToLive: Duration.infinity
+              timeToLive: Duration.infinity,
+              minScore: 0 // Accept any score >= 0
             })
 
             // Add multiple entries to same bucket (same url)
@@ -1182,9 +1183,10 @@ describe("FuzzyCache - TTL Expiration", () => {
     Effect.gen(function* () {
       const cache = yield* FuzzyCache.make({
         lookup: (params: { text: string }) => Effect.succeed(`result-${params.text}`),
-        config: { text: Matchers.levenshtein(0.0) },
+        config: { text: Matchers.levenshtein(1.0) }, // Accept all fuzzy matches
         capacity: { bucket: 100, list: 10 },
-        timeToLive: Duration.seconds(5)
+        timeToLive: Duration.seconds(5),
+        minScore: 0 // Accept any score
       })
 
       // Add entries
@@ -1289,10 +1291,11 @@ describe("FuzzyCache - TTL Expiration", () => {
           Effect.succeed(`value-${params.query}`),
         config: {
           userId: Matchers.Exact(),
-          query: Matchers.levenshtein(0.0)
+          query: Matchers.levenshtein(1.0) // Accept all fuzzy matches
         },
         capacity: { bucket: 100, list: 10 },
-        timeToLive: Duration.seconds(5)
+        timeToLive: Duration.seconds(5),
+        minScore: 0 // Accept any score
       })
 
       // Add first fuzzy entry to bucket using set (expires at T+5)
@@ -1842,5 +1845,74 @@ describe("FuzzyCache - Max Capacity with Expiration-Based Eviction", () => {
         const optionAfter = yield* cache.getOptionComplete({ key: "test" })
         assert.isTrue(Option.isSome(optionAfter))
       }))
+  })
+
+  describe("All-Fuzzy Configuration (No Exact Matchers)", () => {
+    it("should work with all fuzzy matchers (no exact fields)", () =>
+      Effect.gen(function* () {
+        let lookupCount = 0
+        const lookup = (params: { name: string; age: number }) => {
+          lookupCount++
+          return Effect.succeed(`${params.name}-${params.age}`)
+        }
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: {
+            name: Matchers.levenshtein(0.3),
+            age: Matchers.numeric(5)
+          },
+          capacity: { bucket: 10, list: 10 },
+          timeToLive: Duration.infinity
+        })
+
+        // First call - cache miss
+        const result1 = yield* cache.get({ name: "Alice", age: 30 })
+        assert.strictEqual(result1, "Alice-30")
+        assert.strictEqual(lookupCount, 1)
+
+        // Second call with exact same params - cache hit
+        const result2 = yield* cache.get({ name: "Alice", age: 30 })
+        assert.strictEqual(result2, "Alice-30")
+        assert.strictEqual(lookupCount, 1) // No new lookup
+
+        // Third call with similar params - fuzzy match hit
+        const result3 = yield* cache.get({ name: "Alise", age: 31 })
+        assert.strictEqual(result3, "Alice-30") // Returns cached fuzzy match
+        assert.strictEqual(lookupCount, 1) // No new lookup
+
+        // Verify all entries are in the same bucket
+        const size = yield* cache.size
+        assert.strictEqual(size, 1) // Only one entry cached
+      }).pipe(Effect.runPromise))
+
+    it("should handle multiple entries in single bucket with all fuzzy matchers", () =>
+      Effect.gen(function* () {
+        const lookup = (params: { x: number; y: number }) =>
+          Effect.succeed(`${params.x},${params.y}`)
+
+        const cache = yield* FuzzyCache.make({
+          lookup,
+          config: {
+            x: Matchers.numeric(2),
+            y: Matchers.numeric(2)
+          },
+          capacity: { bucket: 10, list: 10 },
+          timeToLive: Duration.infinity
+        })
+
+
+        // Add multiple entries - all go to same bucket (no exact matchers)
+        yield* cache.get({ x: 10, y: 20 })
+        yield* cache.get({ x: 100, y: 200 })
+        yield* cache.get({ x: 1000, y: 2000 })
+
+        const size = yield* cache.size
+        assert.strictEqual(size, 3) // Three distinct entries in one bucket
+
+        // Query should find best fuzzy match from the single bucket
+        const result = yield* cache.get({ x: 11, y: 21 })
+        assert.strictEqual(result, "10,20") // Closest match
+      }).pipe(Effect.runPromise))
   })
 })

@@ -4,7 +4,6 @@ import * as Effect from "effect/Effect"
 import * as Duration from "effect/Duration"
 import * as Option from "effect/Option"
 import * as Either from "effect/Either"
-import * as Equal from "effect/Equal"
 import * as Exit from "effect/Exit"
 import * as Order from "effect/Order"
 import * as Deferred from "effect/Deferred"
@@ -15,9 +14,8 @@ import { pipe } from "effect/Function"
 import type { FuzzyConfig } from "./config.js"
 import { partitionParams } from "./config.js"
 import type { BucketKey } from "./bucketKey.js"
-import { createBucketKey } from "./bucketKey.js"
-import type { EntryValue } from "./entry.js"
-import { EntryValue as EntryValueNS, hasExpired } from "./entry.js"
+import { makeBucketKey } from "./bucketKey.js"
+import * as EntryValue from "./entry"
 import { findBestMatch, scoreEntry } from "./scoring.js"
 import { addEntryWithEviction, removeEntryByValue } from "./bucket.js"
 import type { StatsTracker } from "./stats.js"
@@ -29,7 +27,7 @@ const computeTTL = <Value, Error>(
     Duration.toMillis(timeToLive(exit))
 
 const getBestMatchFromBucket = <Params extends Record<string, unknown>, Value, Error>(
-  bucket: Array<EntryValue<Value, Error>>,
+  bucket: Array<EntryValue.EntryValue<Value, Error>>,
   params: Params,
   config: FuzzyConfig<Params>,
   now: number,
@@ -45,7 +43,7 @@ const getBestMatchFromBucket = <Params extends Record<string, unknown>, Value, E
 
 const lookupAndCache = <Params extends Record<string, unknown>, Value, Error, R>(
   params: Params,
-  bucket: Array<EntryValue<Value, Error>>,
+  bucket: Array<EntryValue.EntryValue<Value, Error>>,
   now: number,
   lookup: (params: Params) => Effect.Effect<Value, Error, R>,
   context: Context.Context<R>,
@@ -57,10 +55,10 @@ const lookupAndCache = <Params extends Record<string, unknown>, Value, Error, R>
     const paramsHash = Hash.structure(params)
 
     const existingPending = bucket.find(
-      (e) => EntryValueNS.isPending(e) && Hash.hash(e) === paramsHash
+      (e) => EntryValue.isPending(e) && Hash.hash(e) === paramsHash
     )
 
-    if (existingPending && EntryValueNS.isPending(existingPending)) {
+    if (existingPending && EntryValue.isPending(existingPending)) {
       fuzzyStatsTracker.trackHit()
       return (yield* Deferred.await(existingPending.deferred)) as Value
     }
@@ -68,7 +66,7 @@ const lookupAndCache = <Params extends Record<string, unknown>, Value, Error, R>
     fuzzyStatsTracker.trackMiss()
 
     const deferred = yield* Deferred.make<Value, Error>()
-    const pendingEntry = EntryValueNS.pending<Value, Error>(params, deferred)
+    const pendingEntry = EntryValue.pending<Value, Error>(params, deferred)
     bucket.push(pendingEntry)
 
     const exit = yield* Effect.exit(Effect.provide(lookup(params), context))
@@ -79,7 +77,7 @@ const lookupAndCache = <Params extends Record<string, unknown>, Value, Error, R>
     }
 
     if (Exit.isSuccess(exit)) {
-      const entry = EntryValueNS.complete<Value, Error>(
+      const entry = EntryValue.complete<Value, Error>(
         params,
         exit.value,
         now + computeTTLFn(exit),
@@ -97,11 +95,11 @@ const getBucketAndMatch = <Params extends Record<string, unknown>, Value, Error>
   params: Params,
   config: FuzzyConfig<Params>,
   minScore: number,
-  getBucket: (key: BucketKey) => Effect.Effect<Option.Option<Array<EntryValue<Value, Error>>>>
-): Effect.Effect<Option.Option<{ bucket: Array<EntryValue<Value, Error>>; best: { value: Value; score: number; params: Record<string, unknown> }; now: number }>> =>
+  getBucket: (key: BucketKey) => Effect.Effect<Option.Option<Array<EntryValue.EntryValue<Value, Error>>>>
+): Effect.Effect<Option.Option<{ bucket: Array<EntryValue.EntryValue<Value, Error>>; best: { value: Value; score: number; params: Record<string, unknown> }; now: number }>> =>
   Effect.gen(function* () {
     const { exact } = partitionParams(params, config)
-    const bucketKey = createBucketKey(exact)
+    const bucketKey = makeBucketKey(exact)
     const maybeBucket = yield* getBucket(bucketKey)
     const now = yield* Clock.currentTimeMillis
     return Option.Do.pipe(
@@ -113,7 +111,7 @@ const getBucketAndMatch = <Params extends Record<string, unknown>, Value, Error>
     )
   })
 
-export const makeImpl = <Params extends Record<string, unknown>, Value, Error = never, R = never>(
+export const makeWith = <Params extends Record<string, unknown>, Value, Error = never, R = never>(
   options: {
     readonly lookup: (params: Params) => Effect.Effect<Value, Error, R>
     readonly config: FuzzyConfig<Params>
@@ -126,7 +124,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
     const context = yield* Effect.context<R>()
     const fuzzyStatsTracker = createStatsTracker()
 
-    const bucketCache = yield* Cache.make<BucketKey, Array<EntryValue<Value, Error>>>({
+    const bucketCache = yield* Cache.make<BucketKey, Array<EntryValue.EntryValue<Value, Error>>>({
       capacity: options.capacity.bucket,
       timeToLive: Duration.infinity,
       lookup: () => Effect.succeed([])
@@ -138,7 +136,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       get: (params: Params): Effect.Effect<Value, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
@@ -151,7 +149,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       getEither: (params: Params): Effect.Effect<Either.Either<Value, Value>, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
@@ -170,7 +168,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       getOption: (params: Params): Effect.Effect<Option.Option<Value>, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucketOption = yield* bucketCache.getOption(bucketKey)
 
           return yield* pipe(
@@ -187,10 +185,10 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
 
                 const paramsHash = Hash.structure(params)
                 const pendingEntry = bucket.find(
-                  (e) => EntryValueNS.isPending(e) && Hash.hash(e) === paramsHash
+                  (e): e is EntryValue.Pending<Value, Error> => EntryValue.isPending(e) && Hash.hash(e) === paramsHash
                 )
 
-                if (pendingEntry && EntryValueNS.isPending(pendingEntry)) {
+                if (pendingEntry) {
                   const value = yield* Deferred.await(pendingEntry.deferred)
                   return Option.some(value)
                 }
@@ -204,7 +202,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       getOptionComplete: (params: Params): Effect.Effect<Option.Option<Value>> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
@@ -213,7 +211,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
             Option.flatMap((bucket) => {
               const paramsHash = Hash.structure(params)
               const hasPending = bucket.some(
-                (e) => EntryValueNS.isPending(e) && Hash.hash(e) === paramsHash
+                (e) => EntryValue.isPending(e) && Hash.hash(e) === paramsHash
               )
 
               if (hasPending) {
@@ -231,20 +229,20 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       getAll: (params: Params, threshold = 0.0): Effect.Effect<Array<any>, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
           for (let i = bucket.length - 1; i >= 0; i--) {
             const entry = bucket[i]
-            if (entry && EntryValueNS.isComplete(entry) && hasExpired(now)(entry)) {
+            if (entry && EntryValue.isComplete(entry) && EntryValue.hasExpired(now)(entry)) {
               bucket.splice(i, 1)
             }
           }
 
           if (bucket.length === 0) {
             const value: Value = yield* Effect.provide(options.lookup(params), context)
-            const entry = EntryValueNS.complete<Value, Error>(
+            const entry = EntryValue.complete<Value, Error>(
               params,
               value,
               now + computeTTLFn(Exit.succeed(value)),
@@ -257,17 +255,18 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           const effectiveThreshold = Math.max(threshold, options.minScore)
           return pipe(
             bucket,
-            Array.filter(EntryValueNS.isComplete),
-            Array.map((entry) => ({
-              value: entry.value,
-              score: scoreEntry(
-                entry,
-                params,
-                options.config
-              ),
-              params: entry.params
-            })),
-            Array.filter((result) => result.score >= effectiveThreshold),
+            Array.filter(EntryValue.isComplete),
+            Array.filterMap((entry) =>
+              pipe(
+                scoreEntry(entry, params, options.config),
+                Option.filter((score) => score >= effectiveThreshold),
+                Option.map((score) => ({
+                  value: entry.value,
+                  score,
+                  params: entry.params
+                }))
+              )
+            ),
             Array.sortWith((entry) => entry.score, Order.number)
           )
         }),
@@ -275,12 +274,12 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       refresh: (params: Params): Effect.Effect<void, Error> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
           const value: Value = yield* Effect.provide(options.lookup(params), context)
-          const entry = EntryValueNS.complete<Value, Error>(
+          const entry = EntryValue.complete<Value, Error>(
             params,
             value,
             now + computeTTLFn(Exit.succeed(value)),
@@ -292,20 +291,20 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       set: (params: Params, value: Value): Effect.Effect<void> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
           const paramsHash = Hash.structure(params)
           const existingIndex = bucket.findIndex((entry) =>
-            EntryValueNS.isComplete(entry) &&
+            EntryValue.isComplete(entry) &&
             Hash.hash(entry) === paramsHash
           )
 
           if (existingIndex !== -1) {
             const existingEntry = bucket[existingIndex]!
-            if (EntryValueNS.isComplete(existingEntry)) {
-              bucket[existingIndex] = EntryValueNS.complete<Value, Error>(
+            if (EntryValue.isComplete(existingEntry)) {
+              bucket[existingIndex] = EntryValue.complete<Value, Error>(
                 params,
                 value,
                 now + computeTTLFn(Exit.succeed(value)),
@@ -313,7 +312,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
               )
             }
           } else {
-            const entry = EntryValueNS.complete<Value, Error>(
+            const entry = EntryValue.complete<Value, Error>(
               params,
               value,
               now + computeTTLFn(Exit.succeed(value)),
@@ -338,12 +337,12 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
       contains: (params: Params): Effect.Effect<boolean> =>
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
-          const bucketKey = createBucketKey(exact)
+          const bucketKey = makeBucketKey(exact)
           const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
 
           return pipe(
             bucketOption,
-            Option.map((bucket) => bucket.some(EntryValueNS.isComplete)),
+            Option.map((bucket) => bucket.some(EntryValue.isComplete)),
             Option.getOrElse(() => false)
           )
         }),
@@ -354,7 +353,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           Effect.map(Option.flatMap(({ bucket, best }) =>
             pipe(
               bucket,
-              Array.filter(EntryValueNS.isComplete),
+              Array.filter(EntryValue.isComplete),
               Array.findFirst((e) => e.value === best.value),
               Option.map((entry) => Cache.makeEntryStats(entry.loadedMillis))
             )
@@ -386,7 +385,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
         Effect.map((buckets) => pipe(
           buckets,
           Array.flatten,
-          Array.filter(EntryValueNS.isComplete),
+          Array.filter(EntryValue.isComplete),
           (arr) => arr.length
         ))
       ),
@@ -397,7 +396,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           buckets,
           Array.flatten,
           Array.filterMap((entry) =>
-            EntryValueNS.isComplete(entry) ? Option.some(entry.params as Params) : Option.none()
+            EntryValue.isComplete(entry) ? Option.some(entry.params as Params) : Option.none()
           )
         ))
       ),
@@ -408,7 +407,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           buckets,
           Array.flatten,
           Array.filterMap((entry) =>
-            EntryValueNS.isComplete(entry) ? Option.some(entry.value) : Option.none()
+            EntryValue.isComplete(entry) ? Option.some(entry.value) : Option.none()
           )
         ))
       ),
@@ -419,7 +418,7 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           buckets,
           Array.flatten,
           Array.filterMap((entry) =>
-            EntryValueNS.isComplete(entry)
+            EntryValue.isComplete(entry)
               ? Option.some([entry.params as Params, entry.value] as [Params, Value])
               : Option.none()
           )

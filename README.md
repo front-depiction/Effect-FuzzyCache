@@ -412,7 +412,7 @@ Matchers.Exact()
 Fuzzy string matching using edit distance.
 
 ```typescript
-Matchers.levenshtein(threshold: number)
+Matchers.levenshtein(threshold: number): ParamMatcher<string>
 ```
 
 **Parameters:**
@@ -420,34 +420,36 @@ Matchers.levenshtein(threshold: number)
 
 **Score Calculation:**
 - Edit distance / max(length) = normalized distance
-- Score = 1.0 - normalized distance
-- Returns 0.0 if beyond threshold
+- **If normalized > threshold**: Returns `Option.none()` - **entry is completely excluded**
+- **If normalized ≤ threshold**: Returns `Option.some(1.0 - normalized)`
 
 **Example:**
 
 ```typescript
 const matcher = Matchers.levenshtein(0.3)
 
-// "hello" vs "hallo": distance 1, length 5, normalized 0.2, score 0.8
-// "hello" vs "world": distance 4, length 5, normalized 0.8, score 0.2
-// "hello" vs "xyz": distance 5, length 5, normalized 1.0, score 0.0
+// "hello" vs "hallo": distance 1, length 5, normalized 0.2 → Option.some(0.8)
+// "hello" vs "world": distance 4, length 5, normalized 0.8 → Option.none() (exceeds threshold)
+// "hello" vs "xyz": distance 5, length 5, normalized 1.0 → Option.none() (exceeds threshold)
 ```
+
+**Important:** Entries returning `Option.none()` for any parameter are **completely filtered out** and won't appear in results at all.
 
 ### numeric
 
 Fuzzy numeric matching with tolerance.
 
 ```typescript
-Matchers.numeric(tolerance: number)
+Matchers.numeric(tolerance: number): ParamMatcher<number>
 ```
 
 **Parameters:**
 - `tolerance` - Maximum difference for perfect match
 
 **Score Calculation:**
-- Within tolerance: score = 1.0
-- Beyond tolerance: score = 1.0 - (excess / tolerance)
-- At 2x tolerance: score = 0.0
+- **If diff ≤ tolerance**: Returns `Option.some(1.0)` (perfect match)
+- **If diff < 2 × tolerance**: Returns `Option.some(1.0 - (diff - tolerance) / tolerance)` (decay)
+- **If diff ≥ 2 × tolerance**: Returns `Option.none()` - **entry is completely excluded**
 
 **Example:**
 
@@ -455,10 +457,13 @@ Matchers.numeric(tolerance: number)
 const matcher = Matchers.numeric(10)
 
 // Query: 100
-// Cached: 105 -> diff 5, score 1.0 (within tolerance)
-// Cached: 115 -> diff 15, score 0.5 (excess 5, score 1.0 - 5/10)
-// Cached: 120 -> diff 20, score 0.0 (at 2x tolerance)
+// Cached: 105 -> diff 5 → Option.some(1.0) (within tolerance)
+// Cached: 115 -> diff 15 → Option.some(0.5) (excess 5, score 1.0 - 5/10)
+// Cached: 120 -> diff 20 → Option.none() (at 2x tolerance, filtered out)
+// Cached: 125 -> diff 25 → Option.none() (beyond 2x tolerance, filtered out)
 ```
+
+**Important:** Entries at or beyond 2x tolerance are **completely excluded** using `Option.none()`.
 
 ### Custom Matchers
 
@@ -466,17 +471,28 @@ Create custom fuzzy matchers with the `Fuzzy` constructor:
 
 ```typescript
 import * as Matchers from "./Matchers"
+import * as Option from "effect/Option"
 
-const customMatcher = Matchers.Fuzzy<Date>((cached, query) => {
+const customMatcher = Matchers.Fuzzy<Date>((cached, query): Option.Option<number> => {
   const diff = Math.abs(cached.getTime() - query.getTime())
   const hourInMs = 3600000
 
-  if (diff <= hourInMs) return 1.0
-  if (diff >= hourInMs * 24) return 0.0
+  // Within 1 hour: perfect match
+  if (diff <= hourInMs) return Option.some(1.0)
 
-  return 1.0 - (diff - hourInMs) / (hourInMs * 23)
+  // Beyond 24 hours: completely exclude entry
+  if (diff >= hourInMs * 24) return Option.none()
+
+  // Between 1 and 24 hours: proportional decay
+  return Option.some(1.0 - (diff - hourInMs) / (hourInMs * 23))
 })
 ```
+
+**Important:** Custom matchers must return `Option.Option<number>`:
+- `Option.some(score)` - Entry is eligible for results (score between 0.0 and 1.0)
+- `Option.none()` - Entry is completely excluded from consideration
+
+If **any** parameter returns `Option.none()`, the entire entry is disqualified from the results.
 
 ## Advanced Usage
 

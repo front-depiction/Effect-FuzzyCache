@@ -3,11 +3,12 @@
  *
  * @since 1.0.0
  */
+import * as Option from "effect/Option"
 import { ParamMatcher } from "./internal/config.js"
 
 
 export const Exact = ParamMatcher.Exact
-export const Fuzzy = <A>(scorer: (cached: A, query: A) => number) => ParamMatcher.Fuzzy({ scorer })
+export const Fuzzy = <A>(scorer: (cached: A, query: A) => Option.Option<number>) => ParamMatcher.Fuzzy({ scorer })
 export const match = ParamMatcher.$match
 export const isFuzzy = ParamMatcher.$is("Fuzzy")
 export const isExact = ParamMatcher.$is("Exact")
@@ -75,20 +76,20 @@ function computeLevenshtein(a: string, b: string): number {
  * ```
  */
 export const levenshtein = (threshold: number): ParamMatcher<string> =>
-  Fuzzy<string>((cached, query): number => {
+  Fuzzy<string>((cached, query): Option.Option<number> => {
     const distance = computeLevenshtein(cached, query)
     const maxLength = Math.max(cached.length, query.length)
 
     // Handle empty strings
-    if (maxLength === 0) return 1.0
+    if (maxLength === 0) return Option.some(1.0)
 
     const normalized = distance / maxLength
 
-    // If beyond threshold, return 0
-    if (normalized > threshold) return 0.0
+    // If beyond threshold, exclude entry entirely
+    if (normalized > threshold) return Option.none()
 
     // Return similarity score (1.0 = identical, 0.0 = at threshold)
-    return 1.0 - normalized
+    return Option.some(1.0 - normalized)
   })
 
 /**
@@ -116,16 +117,18 @@ export const levenshtein = (threshold: number): ParamMatcher<string> =>
  * ```
  */
 export const numeric = (tolerance: number): ParamMatcher<number> =>
-  Fuzzy<number>((cached, query) => {
+  Fuzzy<number>((cached, query): Option.Option<number> => {
     const diff = Math.abs(cached - query)
 
     // Within tolerance: perfect match
-    if (diff <= tolerance) return 1.0
+    if (diff <= tolerance) return Option.some(1.0)
 
-    // Beyond tolerance: decay proportionally
-    // At 2x tolerance, score reaches 0
+    // Beyond 2x tolerance: exclude entry entirely
+    if (diff >= 2 * tolerance) return Option.none()
+
+    // Between tolerance and 2x: decay proportionally
     const excess = diff - tolerance
     const score = 1.0 - (excess / tolerance)
 
-    return Math.max(0.0, score)
+    return Option.some(score)
   })

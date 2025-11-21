@@ -11,7 +11,6 @@ import * as Either from "effect/Either"
 import * as Predicate from "effect/Predicate"
 import * as Exit from "effect/Exit"
 import type { FuzzyConfig } from "./internal/config.js"
-import { cacheVariance, consumerCacheVariance } from "./internal/config.js"
 import * as Impl from "./internal/fuzzycache.js"
 
 /**
@@ -297,36 +296,10 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
     readonly minScore?: number
   }
 ): Effect.Effect<FuzzyCache<Params, Value, Error>, never, R> =>
-  Effect.map(
-    Impl.makeImpl({
-      lookup: options.lookup,
-      config: options.config,
-      capacity: options.capacity,
-      timeToLive: options.timeToLive,
-      minScore: options.minScore ?? 0
-    }),
-    (impl) => ({
-      [FuzzyCacheTypeId]: FuzzyCacheTypeId,
-      [Cache.CacheTypeId]: cacheVariance,
-      [Cache.ConsumerCacheTypeId]: consumerCacheVariance,
-      get: impl.get,
-      getEither: impl.getEither,
-      getOption: impl.getOption,
-      getOptionComplete: impl.getOptionComplete,
-      getAll: impl.getAll,
-      refresh: impl.refresh,
-      set: impl.set,
-      exactStats: impl.exactStats,
-      fuzzyStats: impl.fuzzyStats,
-      cacheStats: impl.cacheStats,
-      contains: impl.contains,
-      entryStats: impl.entryStats,
-      invalidate: impl.invalidate,
-      invalidateWhen: impl.invalidateWhen,
-      invalidateAll: impl.invalidateAll,
-      size: impl.size,
-      keys: impl.keys,
-      values: impl.values,
-      entries: impl.entries
-    })
-  )
+  Impl.makeWith({
+    lookup: options.lookup,
+    config: options.config,
+    capacity: options.capacity,
+    timeToLive: options.timeToLive,
+    minScore: options.minScore ?? 0
+  })

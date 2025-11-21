@@ -1,9 +1,7 @@
 import * as Cache from "effect/Cache"
 import * as Array from "effect/Array"
 import { pipe } from "effect/Function"
-import type { EntryValue } from "./entry.js"
-import { EntryValue as EntryValueNS } from "./entry.js"
-
+import * as EntryValue from "./entry"
 export interface StatsTracker {
   trackHit: () => void
   trackMiss: () => void
@@ -22,13 +20,13 @@ export const createStatsTracker = (): StatsTracker => {
 }
 
 export const computeBucketStats = <Value>(
-  buckets: Array<Array<EntryValue<Value, any>>>,
+  buckets: Array<Array<EntryValue.EntryValue<Value, any>>>,
   fuzzyStatsTracker: StatsTracker
 ): Cache.CacheStats => {
   const totalSize = pipe(
     buckets,
     Array.flatten,
-    Array.filter(EntryValueNS.isComplete),
+    Array.filter(EntryValue.isComplete),
     (arr) => arr.length
   )
   const { hits, misses } = fuzzyStatsTracker.get()

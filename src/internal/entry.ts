@@ -26,51 +26,47 @@ export type EntryValue<Value, Error> =
   | Complete<Value>
   | Pending<Value, Error>
 
-export namespace EntryValue {
-  const Proto = {
-    [EntryValueTypeId]: EntryValueTypeId,
-    [Hash.symbol](this: EntryValue<unknown, unknown>) {
-      return Hash.cached(this, Hash.structure(this.params))
-    },
-    [Equal.symbol](this: EntryValue<unknown, unknown>, that: unknown) {
-      isEntryValue(that) && this._tag === that._tag && Equal.equals(this, that)
-    }
+const Proto = {
+  [EntryValueTypeId]: EntryValueTypeId,
+  [Hash.symbol](this: EntryValue<unknown, unknown>) {
+    return Hash.cached(this, Hash.structure(this.params))
+  },
+  [Equal.symbol](this: EntryValue<unknown, unknown>, that: unknown) {
+    isEntryValue(that) && this._tag === that._tag && Equal.equals(this, that)
   }
-
-  export const complete = <Value, Error = never>(
-    params: Record<string, unknown>,
-    value: Value,
-    timeToLiveMillis: number,
-    loadedMillis: number
-  ): EntryValue<Value, Error> =>
-    Object.assign({
-      _tag: "Complete" as const,
-      params,
-      value,
-      timeToLiveMillis,
-      loadedMillis
-    }, Proto) as any
-
-  export const pending = <Value, Error>(
-    params: Record<string, unknown>,
-    deferred: Deferred.Deferred<Value, Error>
-  ): EntryValue<Value, Error> => Object.assign(
-    {
-      _tag: "Pending" as const,
-      params,
-      deferred
-    }, Proto) as any
-
-  export const isEntryValue = (u: unknown): u is EntryValue<unknown, unknown> =>
-    Predicate.hasProperty(u, EntryValueTypeId)
-
-  export const isComplete = <Value, Error>(entry: EntryValue<Value, Error>): entry is Complete<Value> =>
-    entry._tag === "Complete"
-
-  export const isPending = <Value, Error>(entry: EntryValue<Value, Error>): entry is Pending<Value, Error> =>
-    entry._tag === "Pending"
 }
 
+export const complete = <Value, Error = never>(
+  params: Record<string, unknown>,
+  value: Value,
+  timeToLiveMillis: number,
+  loadedMillis: number
+): EntryValue<Value, Error> =>
+  Object.assign({
+    _tag: "Complete" as const,
+    params,
+    value,
+    timeToLiveMillis,
+    loadedMillis
+  }, Proto) as any
+
+export const pending = <Value, Error>(
+  params: Record<string, unknown>,
+  deferred: Deferred.Deferred<Value, Error>
+): EntryValue<Value, Error> => Object.assign(
+  {
+    _tag: "Pending" as const,
+    params,
+    deferred
+  }, Proto) as any
+
+export const isEntryValue = (u: unknown): u is EntryValue<unknown, unknown> =>
+  Predicate.hasProperty(u, EntryValueTypeId)
+export const isComplete = <Value, Error>(entry: EntryValue<Value, Error>): entry is Complete<Value> =>
+  entry._tag === "Complete"
+
+export const isPending = <Value, Error>(entry: EntryValue<Value, Error>): entry is Pending<Value, Error> =>
+  entry._tag === "Pending"
 
 export const hasExpired = (now: number) => <Value>(entry: Complete<Value>): boolean =>
   now >= entry.timeToLiveMillis

@@ -14,6 +14,9 @@ import * as Predicate from "effect/Predicate"
 import * as Array from "effect/Array"
 import * as Exit from "effect/Exit"
 import * as Order from "effect/Order"
+import * as Deferred from "effect/Deferred"
+import * as Hash from "effect/Hash"
+import * as MutableHashMap from "effect/MutableHashMap"
 import {
   type BucketKey,
   type CacheEntry,
@@ -342,6 +345,12 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
       lookup: () => Effect.succeed([])
     })
 
+    // Track in-flight lookups to deduplicate concurrent requests for same params
+    // Maps params hash → Deferred for the in-progress lookup
+    const pendingLookups = MutableHashMap.empty<number, Deferred.Deferred<Value, Error>>()
+
+    // Helper: Create consistent hash key for params
+    const hashParams = (params: Params): number => Hash.structure(params)
 
     // Helper: Compute TTL in milliseconds from Exit
     const computeTTL = (exit: Exit.Exit<Value, Error>): number =>
@@ -411,18 +420,54 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             return existing.value.value
           }
 
-          // No match found, call lookup
-          fuzzyStatsTracker.trackMiss()
-          const value: Value = yield* Effect.provide(options.lookup(params), context)
-          const entry: CacheEntry<Value> = {
-            id: generateId(),
-            params,
-            value,
-            timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
-            loadedMillis: now
+          // Check if lookup already in-flight for these params
+          const paramsHash = hashParams(params)
+          const pendingDeferred = MutableHashMap.get(pendingLookups, paramsHash)
+
+          if (Option.isSome(pendingDeferred)) {
+            // Another fiber is already looking up these params, wait for it
+            fuzzyStatsTracker.trackHit()
+            return yield* Deferred.await(pendingDeferred.value)
           }
-          addEntryWithEviction(bucket, entry)
-          return value
+
+          // No match found and no in-flight lookup, start new lookup
+          fuzzyStatsTracker.trackMiss()
+
+          // Create Deferred for this lookup
+          const deferred = yield* Deferred.make<Value, Error>()
+          MutableHashMap.set(pendingLookups, paramsHash, deferred)
+
+          // Perform lookup with proper cleanup
+          const result = yield* Effect.provide(options.lookup(params), context).pipe(
+            Effect.exit,
+            Effect.flatMap((exit) =>
+              Effect.gen(function* () {
+                // Remove from pending map
+                MutableHashMap.remove(pendingLookups, paramsHash)
+
+                // Complete the deferred so other waiting fibers get the result
+                yield* Deferred.complete(deferred, exit)
+
+                if (Exit.isSuccess(exit)) {
+                  // Store in bucket
+                  const entry: CacheEntry<Value> = {
+                    id: generateId(),
+                    params,
+                    value: exit.value,
+                    timeToLiveMillis: now + computeTTL(exit),
+                    loadedMillis: now
+                  }
+                  addEntryWithEviction(bucket, entry)
+                  return exit.value
+                } else {
+                  // Re-throw the error
+                  return yield* Effect.fail(exit.cause)
+                }
+              })
+            )
+          )
+
+          return result
         }),
 
       getEither: (params: Params): Effect.Effect<Either.Either<Value, Value>, Error> =>
@@ -438,17 +483,52 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
             return Either.left(existing.value.value)
           }
 
-          // No match found, call lookup
-          const value: Value = yield* Effect.provide(options.lookup(params), context)
-          const entry: CacheEntry<Value> = {
-            id: generateId(),
-            params,
-            value,
-            timeToLiveMillis: now + computeTTL(Exit.succeed(value)),
-            loadedMillis: now
+          // Check if lookup already in-flight for these params
+          const paramsHash = hashParams(params)
+          const pendingDeferred = MutableHashMap.get(pendingLookups, paramsHash)
+
+          if (Option.isSome(pendingDeferred)) {
+            // Another fiber is already looking up these params, wait for it
+            const value = yield* Deferred.await(pendingDeferred.value)
+            return Either.left(value) // From cache (pending)
           }
-          addEntryWithEviction(bucket, entry)
-          return Either.right(value)
+
+          // No match found and no in-flight lookup, start new lookup
+          // Create Deferred for this lookup
+          const deferred = yield* Deferred.make<Value, Error>()
+          MutableHashMap.set(pendingLookups, paramsHash, deferred)
+
+          // Perform lookup with proper cleanup
+          const value = yield* Effect.provide(options.lookup(params), context).pipe(
+            Effect.exit,
+            Effect.flatMap((exit) =>
+              Effect.gen(function* () {
+                // Remove from pending map
+                MutableHashMap.remove(pendingLookups, paramsHash)
+
+                // Complete the deferred so other waiting fibers get the result
+                yield* Deferred.complete(deferred, exit)
+
+                if (Exit.isSuccess(exit)) {
+                  // Store in bucket
+                  const entry: CacheEntry<Value> = {
+                    id: generateId(),
+                    params,
+                    value: exit.value,
+                    timeToLiveMillis: now + computeTTL(exit),
+                    loadedMillis: now
+                  }
+                  addEntryWithEviction(bucket, entry)
+                  return exit.value
+                } else {
+                  // Re-throw the error
+                  return yield* Effect.fail(exit.cause)
+                }
+              })
+            )
+          )
+
+          return Either.right(value) // Newly computed
         }),
 
       getOption: (params: Params) =>
@@ -463,7 +543,22 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
 
           const now = yield* Clock.currentTimeMillis
           const bestMatch = findBestMatch(bucketOption.value, params, now)
-          return Option.map(bestMatch, (scored) => scored.value)
+
+          if (Option.isSome(bestMatch)) {
+            return Option.some(bestMatch.value.value)
+          }
+
+          // No completed match found, check if lookup is in-flight
+          const paramsHash = hashParams(params)
+          const pendingDeferred = MutableHashMap.get(pendingLookups, paramsHash)
+
+          if (Option.isSome(pendingDeferred)) {
+            // Wait for in-flight lookup
+            const value = yield* Deferred.await(pendingDeferred.value)
+            return Option.some(value)
+          }
+
+          return Option.none()
         }),
 
       getOptionComplete: (params: Params) =>
@@ -474,6 +569,14 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
 
           if (Option.isNone(bucketOption)) {
             return Option.none()
+          }
+
+          // Check if lookup is in-flight - if so, return None (not complete)
+          const paramsHash = hashParams(params)
+          const pendingDeferred = MutableHashMap.get(pendingLookups, paramsHash)
+
+          if (Option.isSome(pendingDeferred)) {
+            return Option.none() // Still pending, not complete
           }
 
           const now = yield* Clock.currentTimeMillis

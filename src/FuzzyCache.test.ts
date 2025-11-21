@@ -16,9 +16,11 @@ import * as Duration from "effect/Duration"
 import * as Schema from "effect/Schema"
 import * as Either from "effect/Either"
 import * as Option from "effect/Option"
+import * as Exit from "effect/Exit"
 import * as TestClock from "effect/TestClock"
 import * as Clock from "effect/Clock"
-import { Arbitrary, Exit, FastCheck as fc } from "effect"
+import * as Deferred from "effect/Deferred"
+import { Arbitrary, FastCheck as fc } from "effect"
 import * as FuzzyCache from "./FuzzyCache.js"
 import * as Matchers from "./Matchers.js"
 
@@ -1721,6 +1723,121 @@ describe("FuzzyCache - Max Capacity with Expiration-Based Eviction", () => {
         assert.isFalse(values.has("v2"), "v2 should be evicted")
         assert.isTrue(values.has("v3"))
         assert.isTrue(values.has("v4"))
+      }))
+  })
+
+  describe("In-flight Request Deduplication", () => {
+    it.effect("should deduplicate concurrent requests for same params", () =>
+      Effect.gen(function* () {
+        let lookupCount = 0
+
+        const cache = yield* FuzzyCache.make({
+          lookup: (params: { key: string }) =>
+            Effect.sync(() => {
+              lookupCount++
+              return `value-${params.key}`
+            }),
+          config: { key: Matchers.Exact() },
+          capacity: { bucket: 100, list: 10 },
+          timeToLive: Duration.minutes(5)
+        })
+
+        // Launch 5 concurrent get operations for same params
+        const results = yield* Effect.all([
+          cache.get({ key: "test" }),
+          cache.get({ key: "test" }),
+          cache.get({ key: "test" }),
+          cache.get({ key: "test" }),
+          cache.get({ key: "test" })
+        ], { concurrency: "unbounded" })
+
+        // Should only lookup once
+        assert.strictEqual(lookupCount, 1)
+
+        // All results should be the same
+        assert.isTrue(results.every(r => r === results[0]))
+        assert.strictEqual(results[0], "value-test")
+      }))
+
+    it.effect("getOption should wait for in-flight lookups", () =>
+      Effect.gen(function* () {
+        const startDeferred = yield* Deferred.make<void>()
+        const completeDeferred = yield* Deferred.make<void>()
+
+        const cache = yield* FuzzyCache.make({
+          lookup: (params: { key: string }) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(startDeferred, void 0)
+              yield* Deferred.await(completeDeferred)
+              return `value-${params.key}`
+            }),
+          config: { key: Matchers.Exact() },
+          capacity: { bucket: 100, list: 10 },
+          timeToLive: Duration.minutes(5)
+        })
+
+        // Start lookup in background
+        const getFiber = yield* Effect.fork(cache.get({ key: "test" }))
+
+        // Wait for lookup to start
+        yield* Deferred.await(startDeferred)
+
+        // Fork getOption (it will wait for pending lookup)
+        const getOptionFiber = yield* Effect.fork(cache.getOption({ key: "test" }))
+
+        // Complete the lookup
+        yield* Deferred.succeed(completeDeferred, void 0)
+
+        // Both should complete successfully
+        const valueExit = yield* getFiber.await
+        const optionExit = yield* getOptionFiber.await
+
+        assert.isTrue(Exit.isSuccess(valueExit))
+        const value = valueExit.value
+        assert.isTrue(Exit.isSuccess(optionExit))
+        const option = optionExit.value
+
+        assert.strictEqual(value, "value-test")
+        assert.isTrue(Option.isSome(option))
+        if (Option.isSome(option)) {
+          assert.strictEqual(option.value, "value-test")
+        }
+      }))
+
+    it.effect("getOptionComplete should return None for in-flight lookups", () =>
+      Effect.gen(function* () {
+        const startDeferred = yield* Deferred.make<void>()
+        const completeDeferred = yield* Deferred.make<void>()
+
+        const cache = yield* FuzzyCache.make({
+          lookup: (params: { key: string }) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(startDeferred, void 0)
+              yield* Deferred.await(completeDeferred)
+              return `value-${params.key}`
+            }),
+          config: { key: Matchers.Exact() },
+          capacity: { bucket: 100, list: 10 },
+          timeToLive: Duration.minutes(5)
+        })
+
+        // Start lookup in background
+        const getFiber = yield* Effect.fork(cache.get({ key: "test" }))
+
+        // Wait for lookup to start
+        yield* Deferred.await(startDeferred)
+
+        // getOptionComplete should return None (not complete yet)
+        const option = yield* cache.getOptionComplete({ key: "test" })
+        assert.isTrue(Option.isNone(option))
+
+        // Complete the lookup
+        yield* Deferred.succeed(completeDeferred, void 0)
+        yield* getFiber.await
+
+        // Now getOptionComplete should return Some
+        const optionAfter = yield* cache.getOptionComplete({ key: "test" })
+        assert.isTrue(Option.isSome(optionAfter))
       }))
   })
 })

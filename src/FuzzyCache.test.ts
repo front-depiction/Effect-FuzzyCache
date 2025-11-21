@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema"
 import * as Either from "effect/Either"
 import * as Option from "effect/Option"
 import * as TestClock from "effect/TestClock"
+import * as Clock from "effect/Clock"
 import { Arbitrary, Exit, FastCheck as fc } from "effect"
 import * as FuzzyCache from "./FuzzyCache.js"
 import * as Matchers from "./Matchers.js"
@@ -1025,6 +1026,39 @@ describe("FuzzyCache - TTL Expiration", () => {
 
       assert.isTrue(Option.isNone(result1))
       assert.isTrue(Option.isSome(result2))
+    }))
+
+  it.effect("should handle fuzzy entries in same bucket with staggered TTLs", () =>
+    Effect.gen(function* () {
+      const cache = yield* FuzzyCache.make({
+        lookup: (params: { userId: string; query: string }) =>
+          Effect.succeed(`value-${params.query}`),
+        config: {
+          userId: Matchers.Exact(),
+          query: Matchers.levenshtein(0.0)
+        },
+        capacity: 100,
+        timeToLive: Duration.seconds(5)
+      })
+
+      // Add first fuzzy entry to bucket using set (expires at T+5)
+      yield* cache.set({ userId: "user1", query: "hello" }, "value-hello")
+
+      // Advance 3 seconds
+      yield* TestClock.adjust(Duration.seconds(3))
+
+      // Add second fuzzy entry to SAME bucket using set (expires at T+8)
+      yield* cache.set({ userId: "user1", query: "hallo" }, "value-hallo")
+
+      // Advance 3 more seconds (total 6 seconds from start)
+      yield* TestClock.adjust(Duration.seconds(3))
+
+      // At T=6000ms: first entry expired (6000 > 5000), second entry still valid (6000 < 8000)
+      // Use getAll to see all entries in the bucket (expired ones are filtered out)
+      const allResults = yield* cache.getAll({ userId: "user1", query: "test" })
+
+      assert.strictEqual(allResults.length, 1, "Only one entry should remain (first expired)")
+      assert.strictEqual(allResults[0]?.value, "value-hallo", "Only second entry should remain")
     }))
 })
 

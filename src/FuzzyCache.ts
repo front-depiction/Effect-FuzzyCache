@@ -312,6 +312,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
       lookup: () => Effect.succeed(new Set<CacheEntry<Value>>())
     })
 
+
     // Helper: Compute TTL in milliseconds from Exit
     const computeTTL = (exit: Exit.Exit<Value, Error>): number =>
       Duration.toMillis(options.timeToLive(exit))
@@ -339,7 +340,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
         .filter((result) => result.score >= minScoreThreshold)
         .sort((a, b) => b.score - a.score)
 
-      return Option.fromNullable(scored[0])
+      return Option.fromIterable(scored)
     }
 
     return {
@@ -405,7 +406,7 @@ export const makeWith = <Params extends Record<string, unknown>, Value, Error = 
         Effect.gen(function* () {
           const { exact } = partitionParams(params, options.config)
           const bucketKey = createBucketKey(exact)
-          const bucketOption = yield* bucketCache.getOptionComplete(bucketKey)
+          const bucketOption = yield* bucketCache.getOption(bucketKey)
 
           if (Option.isNone(bucketOption)) {
             return Option.none()

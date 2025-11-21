@@ -30,17 +30,17 @@
   "dependencies": {
     "@effect/language-service": "^0.56.0",
     "@effect/platform": "^0.93.3",
-    "@effect/platform-bun": "^0.83.0",
-    "effect": "^3.18.0"
+    "@effect/platform-bun": "^0.84.0",
+    "effect": "^3.19.6"
   },
   "devDependencies": {
-    "@effect/vitest": "^0.13.4",
-    "@types/node": "^22.10.2",
-    "@vitest/coverage-v8": "^2.1.8",
+    "@effect/vitest": "^0.27.0",
+    "@types/node": "^24.10.1",
+    "@vitest/coverage-v8": "^4.0.12",
     "typescript": "^5.7.2",
     "vitest": "^4.0.12"
   },
   "peerDependencies": {
-    "effect": "^3.18.0"
+    "effect": "^3.19.6"
   }
 }

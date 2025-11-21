@@ -10,9 +10,9 @@ import * as Option from "effect/Option"
 import * as Either from "effect/Either"
 import * as Predicate from "effect/Predicate"
 import * as Exit from "effect/Exit"
-import type { FuzzyConfig } from "./internal/fuzzycache.js"
-import { cacheVariance, consumerCacheVariance } from "./internal/fuzzycache.js"
-import * as Impl from "./internal/fuzzycache_impl.js"
+import type { FuzzyConfig } from "./internal/config.js"
+import { cacheVariance, consumerCacheVariance } from "./internal/config.js"
+import * as Impl from "./internal/fuzzycache.js"
 
 /**
  * @since 1.0.0

@@ -19,7 +19,6 @@ import {
   partitionParams,
   createBucketKey,
   scoreEntry,
-  generateId,
   hasExpired,
   hasNotExpired
 } from "./fuzzycache.js"
@@ -31,7 +30,6 @@ type EntryValueTypeId = typeof EntryValueTypeId
 export interface Complete<out Value> extends Equal.Equal {
   [EntryValueTypeId]: EntryValueTypeId
   readonly _tag: "Complete"
-  readonly id: string
   readonly params: Record<string, unknown>
   readonly value: Value
   readonly timeToLiveMillis: number
@@ -49,46 +47,42 @@ export type EntryValue<Value, Error> =
   | Complete<Value>
   | Pending<Value, Error>
 
+
 export namespace EntryValue {
+
+  const Proto = {
+    [EntryValueTypeId]: EntryValueTypeId,
+    [Hash.symbol](this: EntryValue<unknown, unknown>) {
+      return Hash.cached(this, Hash.structure(this.params))
+    },
+    [Equal.symbol](this: EntryValue<unknown, unknown>, that: unknown) {
+      isEntryValue(that) && this._tag === that._tag && Equal.equals(this, that)
+    }
+  }
   export const complete = <Value, Error = never>(
-    id: string,
     params: Record<string, unknown>,
     value: Value,
     timeToLiveMillis: number,
     loadedMillis: number
   ): EntryValue<Value, Error> =>
-    ({
-      [Hash.symbol](this: EntryValue<Value, Error>) {
-
-
-      },
-      [Equal.symbol](this: EntryValue<Value, Error>, that: unknown) {
-
-      },
+    Object.assign({
       _tag: "Complete" as const,
-      id,
       params,
       value,
       timeToLiveMillis,
       loadedMillis
-    }) as any
+    }, Proto) as any
 
   export const pending = <Value, Error>(
     params: Record<string, unknown>,
     deferred: Deferred.Deferred<Value, Error>
-  ): EntryValue<Value, Error> =>
-    ({
-      [Hash.symbol](this: EntryValue<Value, Error>) {
-        return Hash.cached(this, Hash.structure(this.params))
-      },
-      [Equal.symbol](this: EntryValue<Value, Error>, that: unknown) {
-        isEntryValue(that) && this._tag === that._tag && Equal.equals(this, that)
-
-      }
+  ): EntryValue<Value, Error> => Object.assign(
+    {
       _tag: "Pending" as const,
       params,
       deferred
-    }) as any
+    }, Proto) as any
+
   export const isEntryValue = (u: unknown): u is EntryValue<unknown, unknown> => Predicate.hasProperty(u, EntryValueTypeId)
 
   export const isComplete = <Value, Error>(entry: EntryValue<Value, Error>): entry is Complete<Value> =>
@@ -147,7 +141,7 @@ const findBestMatch = <Params extends Record<string, unknown>, Value>(
     Array.map((entry) => ({
       value: entry.value,
       score: scoreEntry(
-        { id: entry.id, params: entry.params, value: entry.value, timeToLiveMillis: entry.timeToLiveMillis, loadedMillis: entry.loadedMillis },
+        entry,
         params,
         config
       ),
@@ -157,9 +151,6 @@ const findBestMatch = <Params extends Record<string, unknown>, Value>(
     Array.sortWith((entry) => entry.score, Order.number),
     Option.fromIterable
   )
-
-const hashParams = <Params extends Record<string, unknown>>(params: Params): number =>
-  Hash.structure(params)
 
 const computeTTL = <Value, Error>(
   timeToLive: (exit: Exit.Exit<Value, Error>) => Duration.DurationInput
@@ -194,10 +185,10 @@ const lookupAndCache = <Params extends Record<string, unknown>, Value, Error, R>
   fuzzyStatsTracker: StatsTracker
 ): Effect.Effect<Value, Error> =>
   Effect.gen(function* () {
-    const paramsHash = hashParams(params)
+    const paramsHash = Hash.structure(params)
 
     const existingPending = bucket.find(
-      (e) => EntryValue.isPending(e) && Hash.structure(e.params) === paramsHash
+      (e) => EntryValue.isPending(e) && Hash.hash(e) === paramsHash
     )
 
     if (existingPending && EntryValue.isPending(existingPending)) {
@@ -220,7 +211,6 @@ const lookupAndCache = <Params extends Record<string, unknown>, Value, Error, R>
 
     if (Exit.isSuccess(exit)) {
       const entry = EntryValue.complete<Value, Error>(
-        generateId(),
         params,
         exit.value,
         now + computeTTLFn(exit),
@@ -349,9 +339,9 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
                   return Option.some(best.value.value)
                 }
 
-                const paramsHash = hashParams(params)
+                const paramsHash = Hash.structure(params)
                 const pendingEntry = bucket.find(
-                  (e) => EntryValue.isPending(e) && Hash.structure(e.params) === paramsHash
+                  (e) => EntryValue.isPending(e) && Hash.hash(e) === paramsHash
                 )
 
                 if (pendingEntry && EntryValue.isPending(pendingEntry)) {
@@ -375,9 +365,9 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           return pipe(
             bucketOption,
             Option.flatMap((bucket) => {
-              const paramsHash = hashParams(params)
+              const paramsHash = Hash.structure(params)
               const hasPending = bucket.some(
-                (e) => EntryValue.isPending(e) && Hash.structure(e.params) === paramsHash
+                (e) => EntryValue.isPending(e) && Hash.hash(e) === paramsHash
               )
 
               if (hasPending) {
@@ -409,7 +399,6 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           if (bucket.length === 0) {
             const value: Value = yield* Effect.provide(options.lookup(params), context)
             const entry = EntryValue.complete<Value, Error>(
-              generateId(),
               params,
               value,
               now + computeTTLFn(Exit.succeed(value)),
@@ -446,7 +435,6 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
 
           const value: Value = yield* Effect.provide(options.lookup(params), context)
           const entry = EntryValue.complete<Value, Error>(
-            generateId(),
             params,
             value,
             now + computeTTLFn(Exit.succeed(value)),
@@ -472,7 +460,6 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
             const existingEntry = bucket[existingIndex]!
             if (EntryValue.isComplete(existingEntry)) {
               bucket[existingIndex] = EntryValue.complete<Value, Error>(
-                existingEntry.id,
                 params,
                 value,
                 now + computeTTLFn(Exit.succeed(value)),
@@ -481,7 +468,6 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
             }
           } else {
             const entry = EntryValue.complete<Value, Error>(
-              generateId(),
               params,
               value,
               now + computeTTLFn(Exit.succeed(value)),

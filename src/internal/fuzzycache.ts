@@ -57,7 +57,6 @@ export const makeBucketKey = (exactParams: Record<string, unknown>): BucketKey =
 }
 
 export interface CacheEntry<Value> {
-  readonly id: string
   readonly params: Record<string, unknown>
   readonly value: Value
   readonly timeToLiveMillis: number
@@ -105,10 +104,6 @@ export const scoreEntry = <Params extends Record<string, unknown>>(
   Number.divide(Record.size(config)),
   Option.getOrElse(() => 0)
 )
-
-export function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
-}
 
 export const cacheVariance = {
   _Key: (_: any) => _,

@@ -4,13 +4,15 @@ A high-performance fuzzy cache for Effect that extends Effect's Cache with appro
 
 ## Features
 
-- **Effect Cache Subtyping** - Drop-in replacement for Effect's Cache interface
-- **Fuzzy Parameter Matching** - Score-based approximate matching with configurable thresholds
-- **In-Flight Request Deduplication** - Automatically shares lookups across concurrent requests
-- **Order-Agnostic Hashing** - Uses Effect's `Hash.structure()` for reliable parameter comparison
-- **Two-Level Capacity Management** - Separate bucket and entry-level limits with expiration-based eviction
+- **Effect Cache Subtyping** - Drop-in replacement for Effect's Cache and ConsumerCache interfaces
+- **Fuzzy Parameter Matching** - Score-based approximate matching with configurable thresholds (Levenshtein, numeric, custom)
+- **In-Flight Request Deduplication** - Automatically shares lookups across concurrent requests using hash-based comparison
+- **Order-Agnostic Hashing** - Uses Effect's `Hash.structure()` for reliable parameter comparison across Effect types
+- **Expiration-Based Eviction** - Smart capacity management that evicts entries with earliest expiration times first
+- **Two-Level Capacity Management** - Separate bucket and entry-level limits with independent control
 - **TTL-Based Expiration** - Automatic time-to-live management with per-exit customization
 - **Granular Statistics** - Separate exact (bucket-level) and fuzzy (entry-level) stats tracking
+- **Property-Based Tested** - Comprehensive FastCheck property tests with 1000+ runs per property
 
 ## Installation
 
@@ -566,7 +568,7 @@ const cache = yield* FuzzyCache.makeWith({
 
 ### Effect Cache Compatibility
 
-FuzzyCache is a full subtype of Effect's Cache:
+FuzzyCache is a full subtype of Effect's `Cache` and `ConsumerCache` interfaces, meaning it can be used anywhere these types are expected:
 
 ```typescript
 import * as Cache from "effect/Cache"
@@ -577,6 +579,12 @@ const getCached = <K, V, E>(
   key: K
 ): Effect.Effect<V, E> => cache.get(key)
 
+// Generic function accepting any ConsumerCache (read-only operations)
+const checkCached = <K, V, E>(
+  cache: Cache.ConsumerCache<K, V, E>,
+  key: K
+): Effect.Effect<boolean> => cache.contains(key)
+
 const fuzzyCache = yield* FuzzyCache.make({
   lookup: (params: { key: string }) => Effect.succeed(`value-${params.key}`),
   config: { key: Matchers.Exact() },
@@ -584,16 +592,76 @@ const fuzzyCache = yield* FuzzyCache.make({
   timeToLive: Duration.minutes(5)
 })
 
-// Works seamlessly
+// Works seamlessly with Cache interface
 const value = yield* getCached(fuzzyCache, { key: "test" })
+
+// Works seamlessly with ConsumerCache interface
+const exists = yield* checkCached(fuzzyCache, { key: "test" })
 ```
+
+**Implemented Cache Methods**:
+- `get(params)` - Retrieve or compute value
+- `getEither(params)` - Distinguish cached vs computed
+- `getOption(params)` - Non-blocking lookup (waits for in-flight)
+- `getOptionComplete(params)` - Immediate lookup (returns None for in-flight)
+- `refresh(params)` - Force recomputation
+- `set(params, value)` - Manual cache insertion
+- `invalidate(params)` - Remove single entry
+- `invalidateWhen(params, predicate)` - Conditional invalidation
+- `invalidateAll` - Clear entire cache
+- `contains(params)` - Check existence
+- `entryStats(params)` - Entry-level statistics
+- `cacheStats` - Overall cache statistics
+- `size` - Total entry count
+- `keys` - All parameter sets
+- `values` - All cached values
+- `entries` - All key-value pairs
+
+## Internal Architecture
+
+FuzzyCache is built with a modular architecture split across several internal modules:
+
+### Module Structure
+
+```
+src/
+├── FuzzyCache.ts          # Public API and type definitions
+├── Matchers.ts            # Matcher constructors (Exact, Fuzzy, levenshtein, numeric)
+└── internal/
+    ├── fuzzycache.ts      # Core cache implementation logic
+    ├── config.ts          # Configuration and parameter partitioning
+    ├── bucketKey.ts       # Bucket key generation and hashing
+    ├── entry.ts           # Entry value types (Pending, Complete) and expiration
+    ├── bucket.ts          # Bucket operations and eviction logic
+    ├── scoring.ts         # Fuzzy matching and score calculation
+    └── stats.ts           # Statistics tracking (hits, misses, size)
+```
+
+### Key Design Decisions
+
+**Bucket-Based Organization**: The cache uses exact-match parameters to create isolated buckets, then performs fuzzy matching within each bucket. This provides O(1) bucket lookup followed by O(n) fuzzy scoring where n is the entries per bucket (typically small).
+
+**Hash.structure() for Deduplication**: Uses Effect's `Hash.structure()` to compute structural hashes of parameter objects. This enables:
+- Reliable equality checks across Effect types (Option, Either, etc.)
+- Order-agnostic comparison (objects with same fields in different order are equal)
+- Proper handling of nested structures and arrays
+
+**Expiration-Based Eviction**: When bucket capacity is exceeded, the entry with the earliest absolute expiration time is evicted. This differs from LRU (evicting least recently used) and ensures soon-to-expire entries are removed first, maximizing cache utility.
+
+**Dual Stats Tracking**:
+- `exactStats` tracks bucket-level operations (when buckets are created/accessed via the underlying Cache)
+- `fuzzyStats` tracks entry-level operations (when fuzzy matches succeed/fail within buckets)
+- This distinction is critical because multiple entries can exist in the same bucket
+
+**In-Flight Request Handling**: Pending lookups are stored as special `Pending` entries with Deferred values. Concurrent requests for the same parameters are identified using `Hash.hash()` comparison and await the same Deferred, ensuring only one lookup executes. The `set()` method also uses hash-based deduplication to prevent duplicate entries with identical parameters.
 
 ## Performance
 
-- **O(1) Parameter Hashing**: Uses Effect's `Hash.structure()` for constant-time lookups
+- **O(1) Bucket Lookup**: Uses Effect's `Hash.structure()` for constant-time bucket access
+- **O(n) Fuzzy Scoring**: Linear scan within buckets, where n is typically small (10-100 entries)
 - **In-Flight Deduplication**: Concurrent requests for identical parameters share single lookup
 - **Expiration-Based Eviction**: Efficient memory management by evicting soon-to-expire entries first
-- **Bucket Organization**: Exact parameters create isolated buckets for efficient fuzzy matching
+- **Property-Based Tested**: All core properties verified with FastCheck (1000+ runs per property)
 
 ## Examples
 
@@ -686,6 +754,35 @@ const rateLimitedCache = yield* FuzzyCache.makeWith({
       ? Duration.minutes(10)  // Cache successes longer
       : Duration.seconds(30)  // Retry failures sooner
 })
+```
+
+## Testing
+
+FuzzyCache includes comprehensive tests using `@effect/vitest` and FastCheck for property-based testing:
+
+### Test Coverage
+
+- **60 total tests** - All passing
+- **Property-Based Tests** - 1000+ runs per property verifying core invariants:
+  - Exact match always returns score 1.0
+  - No duplicate lookups for identical parameters
+  - Levenshtein distance symmetry and range properties
+  - Numeric matcher tolerance and scoring properties
+  - Bucket isolation by exact parameters
+  - Score ordering (descending)
+  - Size tracking correctness
+
+- **Cache Subtype Verification** - Proves FuzzyCache implements Cache/ConsumerCache interfaces correctly
+- **TTL Expiration Tests** - Using TestClock for deterministic time-based testing
+- **Capacity & Eviction Tests** - Verifies expiration-based eviction strategy
+- **In-Flight Deduplication Tests** - Confirms concurrent request handling
+- **API Method Tests** - Complete coverage of all public methods
+
+### Running Tests
+
+```bash
+npm test                # Run all tests
+npm run test:coverage   # Generate coverage report
 ```
 
 ## License

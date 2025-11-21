@@ -296,9 +296,10 @@ export const makeImpl = <Params extends Record<string, unknown>, Value, Error = 
           const bucket = yield* bucketCache.get(bucketKey)
           const now = yield* Clock.currentTimeMillis
 
+          const paramsHash = Hash.structure(params)
           const existingIndex = bucket.findIndex((entry) =>
             EntryValueNS.isComplete(entry) &&
-            Equal.equals(entry.params, params)
+            Hash.hash(entry) === paramsHash
           )
 
           if (existingIndex !== -1) {
